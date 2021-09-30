@@ -10,7 +10,7 @@ import pandas as pd
 
 from google.cloud import bigquery
 from firebase_admin import credentials, firestore
-from google.cloud import pubsub_v1
+
 
 import messages_pb2 as pb
 
@@ -71,9 +71,9 @@ def process_message(attributes, data, context):
     # Take existing results first
     QUERY = f"""
         SELECT
-            d.humidity as humidity,
-            d.temperature as temperature,
-            d.voc_index as voc_index,
+            d.rh as RH,
+            d.t_k as tK,
+            d.voc as vocIdx,
             d.time as time
         FROM
             `{TABLE_ID}` d
@@ -93,7 +93,7 @@ def process_message(attributes, data, context):
     pb_df = pd.DataFrame.from_records(
         refined_entries,
         exclude=['device_id'],
-        columns=['device_id','time','temperature','humidity','voc_index']
+        columns=['device_id','time','tK','RH','vocIdx']
     )
 
     # Merge dataframes coming from Big Query and protobufs into linear dataframe
@@ -131,15 +131,15 @@ def process_message(attributes, data, context):
     # Insert summary data to Firestore
     QUERY = f"""
         SELECT
-            avg(d.temperature) as tKavg,
-            avg(d.humidity) as RHavg,
-            avg(d.voc_index) as vocIdxAvg,
-            min(d.temperature) as tKmin,
-            min(d.humidity) as RHmin,
-            min(d.voc_index) as vocMin,
-            max(d.temperature) as tKmax,
-            max(d.humidity) as RHmax,
-            max(d.voc_index) as vocMax
+            avg(d.t_k) as tKavg,
+            avg(d.rh) as RHavg,
+            avg(d.voc) as vocIdxAvg,
+            min(d.t_k) as tKmin,
+            min(d.rh) as RHmin,
+            min(d.voc) as vocMin,
+            max(d.t_k) as tKmax,
+            max(d.rh) as RHmax,
+            max(d.voc) as vocMax
         FROM
             `{TABLE_ID}` d
         where
@@ -172,9 +172,9 @@ def process_message(attributes, data, context):
         doc_ref.set(result_dict)
 
 ############### Methods for firebase functions ################
-
+"""
 def create_firestore_device(data, context):
-    """Creates device into firestore. This is attached to Firestore Write trigger"""
+    #Creates device into firestore. This is attached to Firestore Write trigger
     from google.cloud import iot_v1
 
     path_parts = context.resource.split('/documents/')[1].split('/')
@@ -227,6 +227,7 @@ def cloud_function_pubsub_handler(event, context):
 
 
 def subscribe():
+    from google.cloud import pubsub_v1
     subscriber = pubsub_v1.SubscriberClient()
     topic_name = 'projects/{project_id}/topics/{topic}'.format(
         project_id=os.getenv('GOOGLE_CLOUD_PROJECT'),
@@ -253,3 +254,4 @@ def subscribe():
 
 if __name__ == "__main__":
     subscribe()
+"""
