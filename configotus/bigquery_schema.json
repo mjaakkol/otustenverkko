@@ -1,0 +1,32 @@
+[
+    {
+      "description": "Unique device identified. Often MAC-address",
+      "mode": "REQUIRED",
+      "name": "device_id",
+      "type": "STRING"
+    },
+    {
+      "description": "Relative humidity in % (x100)",
+      "mode": "REQUIRED",
+      "name": "rh",
+      "type": "INTEGER"
+    },
+    {
+      "description": "Temperature in Kelvins (x100)",
+      "mode": "REQUIRED",
+      "name": "t_k",
+      "type": "INTEGER"
+    },
+    {
+      "description": "Local time",
+      "mode": "REQUIRED",
+      "name": "time",
+      "type": "DATETIME"
+    },
+    {
+      "description": "Volatile Organic Compound Index",
+      "mode": "REQUIRED",
+      "name": "voc",
+      "type": "INTEGER"
+    }
+]
