@@ -31,7 +31,7 @@ use log::{info, error, warn, debug};
 use linux_embedded_hal as hal;
 
 use hal::{Delay, I2cdev};
-use i2cdev::linux::LinuxI2CError;
+//use i2cdev::linux::LinuxI2CError;
 
 use shtcx::{
     PowerMode,
@@ -66,7 +66,7 @@ pub enum IlmaotusError {
     TemperatureSensorError(String),
 
     #[error("Creating I2C failed")]
-    Ic2Error(#[from] LinuxI2CError),
+    Ic2Error(#[from] linux_embedded_hal::i2cdev::linux::LinuxI2CError),
 
     //#[error("Unsupported feature set")]
     //UnsupportedFeatureset,
