@@ -11,11 +11,9 @@ import pandas as pd
 from google.cloud import bigquery
 from firebase_admin import credentials, firestore
 
-
 import messages_pb2 as pb
 
 logger = logging.getLogger(__name__)
-
 
 PROJECT_ID = os.getenv('CLOUD_PROJECT')
 DATASET_ID = os.getenv('DATASET_ID')
@@ -171,6 +169,10 @@ def process_message(attributes, data, context):
         logger.warning(f"Updating the current telemetry failed so creating it from the scratch")
         doc_ref.set(result_dict)
 
+def cloud_function_pubsub_handler(event, context):
+    process_message(event['attributes'], base64.b64decode(event['data']), context)
+
+
 ############### Methods for firebase functions ################
 """
 def create_firestore_device(data, context):
@@ -222,8 +224,6 @@ def create_firestore_device(data, context):
         logger.warning("Empty write")
 
 
-def cloud_function_pubsub_handler(event, context):
-    process_message(event['attributes'], base64.b64decode(event['data']), context)
 
 
 def subscribe():
