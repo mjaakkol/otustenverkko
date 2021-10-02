@@ -49,4 +49,4 @@ Thumbs.db
 *.wmv
 
 # Protos file as I want them to be generated
-*_pb2.py
+#*_pb2.py

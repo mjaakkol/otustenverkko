@@ -3,11 +3,17 @@ import argparse
 import logging
 import json
 import subprocess
+import requests
 
 from typing import List, Dict
 from pathlib import Path
+from zipfile import ZipFile
 
 from google.cloud import bigquery
+from google.cloud.functions_v1.services.cloud_functions_service import CloudFunctionsServiceClient
+from google.api_core.exceptions import NotFound
+
+import google.cloud.functions_v1.types as types
 
 PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT')
 DATASET_ID = os.getenv('DATASET_ID')
@@ -74,6 +80,8 @@ def main():
     command.add_parser("create", help="Creates BigQuery database")
     command.add_parser("delete", help="Deletes BigQuery database")
     command.add_parser("protos", help="Converts .proto file into language specific format")
+    command.add_parser("deploy", help="Deploy the cloud function")
+    command.add_parser("dismandle", help="Dismande the cloud function")
 
     args = parser.parse_args()
 
@@ -105,6 +113,53 @@ def main():
     elif args.command == 'delete':
         logger.info("Creating Ilmaotus databases")
         delete_dataset()
+    elif args.command == 'deploy':
+        client = CloudFunctionsServiceClient()
+        parent = f"projects/otustenverkko/locations/us-central1"
+        upload_url = client.generate_upload_url(
+            request={
+                "parent": parent,
+                },
+                timeout=10
+                ).upload_url
+
+        with ZipFile('functions.zip', mode='w') as zip:
+            zip.write(Path('..', 'pilviotus', 'main.py'))
+            zip.write(Path('..', 'pilviotus', 'messages_pb2.py'))
+            zip.write(Path('..', 'pilviotus', 'requirements.txt'))
+
+        r = requests.put(
+            upload_url,
+            files = {'file': open('functions.zip', 'rb')},
+            headers={
+                "content-type": "application/zip",
+                "x-goog-content-length-range": "0,104857600"}
+                )
+        assert(r.status_code == requests.codes.ok)
+
+        function_name = f"{parent}/functions/otustenverkko"
+
+        cfunction = {
+            "name": function_name,
+            "description": "Function for featching and storing telemetry data",
+            "source_upload_url": upload_url,
+            "runtime": "python39",
+            "entry_point": "process_message",
+            "event_trigger" : {
+                "event_type": "providers/cloud.pubsub/eventTypes/topic.publish",
+                "resource": "projects/otustenverkko/topics/telemetry",
+            }
+        }
+
+        try:
+            client.update_function(function=cfunction)
+
+        except NotFound:
+            client.create_function(location=parent, function=cfunction)
+
+
+    elif args.command == 'dismantle':
+        pass
     else:
         logger.error("Unrecognized command")
 
