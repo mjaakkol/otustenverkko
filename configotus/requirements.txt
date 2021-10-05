@@ -1,0 +1,7 @@
+google-cloud-bigquery
+firebase-admin
+google-cloud-firestore
+google-cloud-iot
+google-cloud-pubsub
+protobuf
+google-cloud-functions

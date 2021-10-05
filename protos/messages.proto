@@ -1,0 +1,19 @@
+syntax = "proto3";
+package otusilma;
+
+message EnvironmentData {
+    uint32 time = 1;
+    uint32 temperature_k = 2;
+    uint32 humidity_rh = 3;
+    uint32 voc_index = 4;
+}
+
+message EnvironmentDataBlocks {
+    repeated EnvironmentData blocks = 1;
+}
+
+
+message Configuration {
+	uint32 sample_block_size = 1;
+	uint32 target_firmware_version = 2;
+}

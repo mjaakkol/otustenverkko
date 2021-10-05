@@ -1,0 +1,17 @@
+---
+# This playbook builds Ilmaotus binary. This is needed during the installation and when
+#
+- name: Build ilmaotus Rust asset
+  hosts: localhost
+  tasks:
+    - name: Build ilmaotus
+      ansible.builtin.command:
+        cmd: cargo build --target=armv7-unknown-linux-gnueabihf
+        chdir: ../ilmaotus
+      register: build_output
+      changed_when: build_output.rc != 0
+
+    - name: Testing compilation output
+      debug:
+        msg: "Succeeded"
+      when: build_output is succeeded
