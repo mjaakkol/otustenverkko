@@ -61,6 +61,7 @@ def main():
     parser.add_argument("-u", "--user", help='Owner Firebase ID')
     parser.add_argument("-c", "--characteristics", help='Device characteristics')
     parser.add_argument("-n", "--name", help='Friendly name of IoT device')
+    parser.add_argument("-d", "--destination", default=Path("."), help="The destination path for client certificates")
 
     command = parser.add_subparsers(dest="command")
     command.add_parser("create", help="Creates new registry")
@@ -84,7 +85,7 @@ def main():
     elif args.command == "add":
         manager.create_device(
                 args.id, "US", "CA", "San Diego", "Team Otus", "otus.com", 2000,
-                args.name, args.characteristics, args.user
+                args.name, args.characteristics, args.user, args.destination
                 )
     elif args.command == "remove":
         manager.delete_device(args.id)

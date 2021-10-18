@@ -1,6 +1,8 @@
 import logging
 import os
 
+from pathlib import Path
+
 from google.cloud import pubsub
 from google.cloud import iot_v1
 from google.api_core.exceptions import GoogleAPICallError, AlreadyExists, NotFound
@@ -84,7 +86,9 @@ class GotusManager(object):
         return self._client.modify_cloud_to_device_config(name, data, version_to_update=version)
 
 
-    def create_device(self, device_id: str, country:str, province:str, locality_name: str, organization: str, common_name:str, validity_in_days: int):
+    def create_device(
+        self, device_id: str, country:str, province:str, locality_name: str, organization: str,
+        common_name:str, validity_in_days: int, destination_path: Path):
         """Adds new device to the existing registry
         Adding the device will trigger a creation and automatic insertion of
 
@@ -126,7 +130,7 @@ class GotusManager(object):
             logger.error(e)
             raise
 
-        with open(f"{device_id}_X509.pem", "wb") as f:
+        with open(destination_path.joinpath(f"{device_id}_X509.pem"), "wb") as f:
             f.write(key_pair.private_pem)
 
         return response
@@ -249,6 +253,7 @@ def main():
     parser.add_argument("-i", "--id", help="Device id")
     parser.add_argument("-t", "--topics", help="Topic. If multiple use to comma to separate")
     parser.add_argument("-s", "--service_account_json", help="Path to the service account json file")
+    parser.add_argument("-d", "--destination", default=Path("."), help="The destination path for client certificates")
 
     command = parser.add_subparsers(dest="command")
     command.add_parser("create", help="Creates new registry")
@@ -268,7 +273,7 @@ def main():
     if args.command == "create":
         manager.create_registry(args.topics)
     elif args.command == "add":
-        manager.create_device(args.id, "US", "CA", "San Diego", "Team Otus", "otus.com", 2000)
+        manager.create_device(args.id, "US", "CA", "San Diego", "Team Otus", "otus.com", 2000, args.destination)
     elif args.command == "remove":
         manager.delete_device(args.id)
     elif args.command == "delete":
