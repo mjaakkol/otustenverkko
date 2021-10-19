@@ -1,6 +1,8 @@
 import logging
 import os
 
+from pathlib import Path
+
 from firebase_admin import initialize_app, credentials
 
 from giot_manager import GotusManager

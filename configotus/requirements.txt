@@ -5,3 +5,4 @@ google-cloud-iot
 google-cloud-pubsub
 protobuf
 google-cloud-functions
+cryptography
