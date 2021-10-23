@@ -1,0 +1,31 @@
+---
+# This is playbook for provisioning the new ilmaotus into Google IoT Manager and Firebase
+
+- name: Provision ilmaotus
+  hosts: otustenverkko
+
+  tasks:
+    - name: Provision python script
+      ansible.builtin.command:
+        cmd: python3 otus_config.py -p {{ project }} -l {{ region }} -r {{ registry }} -i {{ ansible_facts[interface]["macaddress"] | ansible.netcommon.hwaddr("bare") }} -d {{ certs }} -f {{ firebase_json }} add
+        chdir: ../configotus
+      register: result
+      # Relies on the fact that AlreadyExists adds string to stderr. When the device is created this is empty
+      changed_when: result.stderr == ''
+      delegate_to: 127.0.0.1
+
+    - name: copy Google root certificate
+      ansible.builtin.copy:
+        src: "{{ certs }}/groots.pem"
+        dest: /etc/ilmaotus/
+        owner: root
+        mode: '0544'
+      become: yes
+
+    - name: copy client certificate
+      ansible.builtin.copy:
+        src: "{{ certs }}/{{ ansible_facts[interface]['macaddress'] | ansible.netcommon.hwaddr('bare') }}_X509.pem"
+        dest: /etc/ilmaotus/
+        owner: root
+        mode: '0544'
+      become: yes
