@@ -88,7 +88,7 @@ class GotusManager(object):
 
     def create_device(
         self, device_id: str, country:str, province:str, locality_name: str, organization: str,
-        common_name:str, validity_in_days: int, destination_path: Path) -> None:
+        common_name:str, validity_in_days: int, destination_path: Path) -> bool:
         """Adds new device to the existing registry
         Adding the device will trigger a creation and automatic insertion of
 
@@ -125,6 +125,7 @@ class GotusManager(object):
         except AlreadyExists:
             # This is not treated an error right now but the command is just ignored
             logger.warning(f"Device {device_id} already exists")
+            return False
 
         except GoogleAPICallError as e:
             logger.error(e)
@@ -133,6 +134,7 @@ class GotusManager(object):
         with open(destination_path.joinpath(f"{device_id}_X509.pem"), "wb") as f:
             f.write(key_pair.private_pem)
 
+        return True
 
     def delete_device(self, device_id:str):
         """Delete device from device registry

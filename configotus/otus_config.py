@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 
 from pathlib import Path
 
@@ -37,9 +38,16 @@ class OtusManager:
         characteristics: int,
         user: str,
         destination: Path
-        ):
-        self._gotus.create_device(device_id, country, province, locality_name, organization, common_name, validity_in_days, destination)
-        add_device(device_id, name, characteristics, user)
+        ) -> bool:
+        result = self._gotus.create_device(
+            device_id, country, province, locality_name, organization, common_name,
+            validity_in_days, destination)
+
+        if result:
+            add_device(device_id, name, characteristics, user)
+
+        return result
+
 
     def delete_device(self, device_id:str):
         self._gotus.delete_device(device_id)
@@ -86,7 +94,7 @@ def main():
     if args.command == "create":
         manager.create_registry(args.topics)
     elif args.command == "add":
-        manager.create_device(
+        result = manager.create_device(
                 args.id, "US", "CA", "San Diego", "Team Otus", "otus.com", 2000,
                 args.name, args.characteristics, args.user, Path(args.destination)
                 )
