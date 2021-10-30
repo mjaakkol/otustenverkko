@@ -30,7 +30,7 @@ class keys(object):
         if not hasattr(self, "_private_key"):
             self._private_key = self._key.private_bytes(
                 encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.OpenSSH,
+                format=serialization.PrivateFormat.TraditionalOpenSSL,
                 encryption_algorithm=serialization.NoEncryption()
                 )
 
