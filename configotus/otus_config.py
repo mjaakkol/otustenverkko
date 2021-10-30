@@ -1,5 +1,8 @@
 import logging
 import os
+import sys
+
+from pathlib import Path
 
 from firebase_admin import initialize_app, credentials
 
@@ -33,10 +36,18 @@ class OtusManager:
         validity_in_days: int,
         name: str,
         characteristics: int,
-        user: str
-        ):
-        self._gotus.create_device(device_id, country, province, locality_name, organization, common_name, validity_in_days)
-        add_device(device_id, name, characteristics, user)
+        user: str,
+        destination: Path
+        ) -> bool:
+        result = self._gotus.create_device(
+            device_id, country, province, locality_name, organization, common_name,
+            validity_in_days, destination)
+
+        if result:
+            add_device(device_id, name, characteristics, user)
+
+        return result
+
 
     def delete_device(self, device_id:str):
         self._gotus.delete_device(device_id)
@@ -61,6 +72,7 @@ def main():
     parser.add_argument("-u", "--user", help='Owner Firebase ID')
     parser.add_argument("-c", "--characteristics", help='Device characteristics')
     parser.add_argument("-n", "--name", help='Friendly name of IoT device')
+    parser.add_argument("-d", "--destination", default=".", help="The destination path for client certificates")
 
     command = parser.add_subparsers(dest="command")
     command.add_parser("create", help="Creates new registry")
@@ -82,9 +94,9 @@ def main():
     if args.command == "create":
         manager.create_registry(args.topics)
     elif args.command == "add":
-        manager.create_device(
+        result = manager.create_device(
                 args.id, "US", "CA", "San Diego", "Team Otus", "otus.com", 2000,
-                args.name, args.characteristics, args.user
+                args.name, args.characteristics, args.user, Path(args.destination)
                 )
     elif args.command == "remove":
         manager.delete_device(args.id)
