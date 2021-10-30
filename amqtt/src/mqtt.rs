@@ -1,10 +1,11 @@
 use std::{
     fmt,
-    io::Cursor,
-    time::Duration,
+    io,
+    time::{Duration, SystemTime},
+    net::ToSocketAddrs,
     marker,
     collections::HashMap,
-    sync,
+    sync::Arc,
 };
 
 //TODO: If smol will ever include stream.split, the reference for futures crate can be removed.
@@ -33,8 +34,20 @@ use mqttrs::{
     Subscribe,
 };
 use thiserror::Error;
-use async_tls::TlsConnector;
-use rustls::ClientConfig;
+
+use futures_rustls::{
+    TlsConnector,
+    rustls::{
+        ServerName,
+    }
+};
+
+use rustls::{
+    internal::msgs::handshake::DigitallySignedStruct, Certificate, client::HandshakeSignatureValid,
+    client::ServerCertVerified, Error, ClientConfig
+};
+
+use x509_parser::prelude::*;
 use log::{debug, info, error, warn};
 use crate::packets;
 
@@ -102,6 +115,14 @@ pub enum MqttError {
     #[error("Received packet incomplete")]
     ReceptionIncomplete,
 
+    /// Parsing PEM failed
+    #[error("Parsing PEM failed")]
+    ParsingPEM,
+
+    /// Parsing Certificate failed
+    #[error("Parsing PEM failed")]
+    ParsingCertificateFailed,
+
     /// Unsupported Qos
     #[error("Unsupported MQTT Qos value {0}")]
     UnsupportedQoS(usize),
@@ -147,7 +168,7 @@ enum ChannelPacket {
 #[derive(Clone)]
 struct MqttMsg {
     pid : i32,
-    buffer : sync::Arc<BytesMut>,
+    buffer : Arc<BytesMut>,
     req_future: packets::PacketFuture,
 }
 
@@ -155,7 +176,7 @@ impl MqttMsg {
     fn new(pid: i32, buffer : BytesMut/*, meta: Meta*/) -> Self {
         Self {
             pid,
-            buffer: sync::Arc::new(buffer),
+            buffer: Arc::new(buffer),
             req_future: packets::PacketFuture::new(),
             //meta
         }
@@ -787,6 +808,156 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
     }
 }
 
+struct SelfSignedCertVerifier {
+    certs: Vec<u8>,
+}
+
+impl SelfSignedCertVerifier {
+    fn new(root_cert: &[u8]) -> Self {
+        Self {
+            certs: Vec::from(root_cert)
+        }
+    }
+
+    fn check_signature(&self, cert: &Certificate) -> Result<HandshakeSignatureValid, Error> {
+        let res = X509Certificate::from_der(&cert.0);
+        match res {
+            Ok((rem, xcert)) => {
+                assert!(rem.is_empty());
+
+                info!("X.509 Subject: {}", xcert.subject());
+                info!("X.509 Issuer: {}", xcert.issuer());
+                info!("X.509 serial: {}", xcert.tbs_certificate.raw_serial_as_string());
+                //
+                //assert_eq!(xcert.version(), X509Version::V3);
+
+                for pem in Pem::iter_from_buffer(&self.certs) {
+                    let pem = pem.expect("this certificate is fucked");
+                    let x509 = pem.parse_x509().expect("X.509: decoding DER failed");
+                    assert_eq!(x509.tbs_certificate.version, X509Version::V3);
+
+                    let issuer_public_key = x509.public_key();
+                    if xcert.verify_signature(Some(issuer_public_key)).is_ok() {
+                        warn!("Signature validation worked");
+                        return Ok(HandshakeSignatureValid::assertion())
+                    }
+                }
+            },
+            _ => {
+                error!("Certification parsin failed");
+                return Err(Error::InvalidCertificateEncoding)
+            },
+        }
+        error!("verify_tls13_signature: error checking signature");
+        Err(Error::InvalidCertificateSignature)
+    }
+}
+
+
+impl rustls::client::ServerCertVerifier for SelfSignedCertVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &Certificate,
+        _intermediates: &[Certificate],
+        server_name: &ServerName,
+        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _ocsp_response: &[u8],
+        now: SystemTime
+    ) -> Result<ServerCertVerified, Error> {
+
+        info!("Server-name {:?}", server_name);
+
+        // TODO: Check that certificate matches DNS-name
+        // TODO: Flag UnknownIssuer
+        let res = X509Certificate::from_der(end_entity.0.as_slice());
+        match res {
+            Ok((rem, x509)) => {
+                assert!(rem.is_empty());
+                //
+                info!("-----------Entity certificate---------------");
+                info!("X.509 Subject: {}", x509.subject());
+                info!("X.509 Version: {}", x509.version());
+                info!("X.509 Issuer: {}", x509.issuer());
+                info!("X.509 serial: {}", x509.tbs_certificate.raw_serial_as_string());
+
+                let subject = x509.subject();
+
+                let matches_found: Vec::<_> = subject
+                    .iter_common_name()
+                    .filter(|name| {
+                        if let ServerName::DnsName(server) = server_name {
+                            if let Ok(cert_server_str) = name.as_str() {
+                                return cert_server_str == server.as_ref()
+                            }
+                        }
+                        false
+                    })
+                    .collect();
+
+                if matches_found.is_empty() {
+                    error!("No DN match found");
+                    return Err(Error::InvalidCertificateData(String::from("No DN match found")));
+                }
+
+                // TODO: SAN validation should be added
+
+                // Starting with timing topic
+                let asn_time = ASN1Time::from_timestamp(
+                    now.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs().try_into().unwrap()
+                );
+
+                if !x509.validity().is_valid_at(asn_time) {
+                    error!("Outside of validity period");
+                    return Err(Error::InvalidCertificateData(String::from("Invalid time information")));
+                }
+
+                if x509.version() != X509Version::V3 {
+                    warn!("Certificate version is not V3 but {}", x509.version());
+                }
+
+                for pem in Pem::iter_from_buffer(&self.certs) {
+                    let pem = pem.expect("this certificate is broken");
+                    let xcert = pem.parse_x509().expect("X.509: decoding DER failed");
+
+                    info!("---------Stored-------------");
+                    info!("X.509 Subject: {}", xcert.subject());
+                    info!("X.509 Version: {}", xcert.version());
+                    info!("X.509 Issuer: {}", xcert.issuer());
+                    info!("X.509 serial: {}", xcert.tbs_certificate.raw_serial_as_string());
+
+                    if xcert.issuer() == x509.issuer() {
+                        return Ok(rustls::client::ServerCertVerified::assertion());
+                    }
+                }
+                return Err(Error::InvalidCertificateData(String::from("No valid DN found for issuer")));
+            },
+            _ => error!("x509 parsing failed: {:?}", res),
+        }
+
+        return Err(Error::InvalidCertificateEncoding);
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        cert: &Certificate,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
+        debug!("verify_tls12_signature");
+        return self.check_signature(cert);
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        cert: &Certificate,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
+        debug!("verify_tls13_signature");
+        return self.check_signature(cert);
+    }
+}
+
 /// Builder MQTT Client
 ///
 /// Builder for setting various MQTT connection parameters creating the actual client for the connection.
@@ -801,8 +972,7 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
 ///
 /// let mut amqtt = if let Some(c) = certificate {
 ///     mqtt_init.port = 8883;
-///     mqtt_init.set_certificate(c)?;
-///     mqtt_init.with_tls().await?
+///     mqtt_init.with_tls(c).await?
 /// }
 /// else {
 ///     mqtt_init.init().await?
@@ -816,8 +986,6 @@ pub struct MqttInit {
     pub address: String,
     /// MQTT port address
     pub port: u16,
-    /// Client TLS configuration
-    pub client_config: ClientConfig,
     //#[doc(hidden)]
     //pub __non_exhaustive: ()
 }
@@ -827,7 +995,6 @@ impl Default for MqttInit {
         Self {
             address: String::new(),
             port: MQTT_DEFAULT,
-            client_config: ClientConfig::new(),
         }
     }
 }
@@ -841,23 +1008,31 @@ impl MqttInit {
         Ok(Client::init_common(stream))
     }
 
-    /// Sets connection root certificate
-    pub fn set_certificate(&mut self, root_cert: &[u8]) -> Result<&Self, MqttError> {
-        let mut pem = Cursor::new(root_cert);
-
-        self.client_config
-            .root_store
-            .add_pem_file(&mut pem)
-            .map_err(|_| MqttError::ErrorRoot)?;
-        Ok(self)
-    }
 
     /// Sets MQTT to use TLS
-    pub async fn with_tls(self) -> Result<Client, MqttError> {
+    pub async fn with_tls(self, root_cert: &[u8]) -> Result<Client, MqttError> {
         info!("init_tls");
-        let stream = net::TcpStream::connect(format!("{}:{}", self.address, self.port)).await?;
 
-        let stream = TlsConnector::from(self.client_config).connect(self.address, stream).await?;
+        let verifier = SelfSignedCertVerifier::new(root_cert);
+
+        let client_config = ClientConfig::builder()
+        .with_safe_defaults()
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_no_client_auth();
+
+        warn!("Cert inserted");
+
+        let addr = (self.address.clone(), self.port)
+            .to_socket_addrs()?
+            .next()
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+
+        let domain = ServerName::try_from(self.address.as_str()).unwrap();
+
+        //let stream = net::TcpStream::connect(format!("{}:{}", addr, self.port)).await?;
+        let stream = net::TcpStream::connect(&addr).await?;
+
+        let stream = TlsConnector::from(Arc::new(client_config)).connect(domain, stream).await?;
 
         debug!("TLS stream crated");
         Ok(Client::init_common(stream))
@@ -891,8 +1066,8 @@ mod tests {
 
                 let mut amqtt = if let Some(c) = cert {
                     mqtt_init.port = 8883;
-                    mqtt_init.set_certificate(c).expect("Setting certificate failed");
-                    mqtt_init.with_tls().await.unwrap()
+                    //mqtt_init.set_certificate(c).expect("Setting certificate failed");
+                    mqtt_init.with_tls(c).await.unwrap()
                 }
                 else {
                     mqtt_init.init().await.unwrap()
@@ -967,6 +1142,12 @@ mod tests {
         let mut ca_cert = Vec::new();
         // read the whole file
         f.read_to_end(&mut ca_cert).unwrap();
+
+        /*
+        let s = match std::str::from_utf8(&ca_cert) {
+            Ok(v) => warn!("{}", v),
+            Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
+          };*/
 
         test_connection("test.mosquitto.org", "amqtt_test2", Some(&ca_cert[..]));
     }

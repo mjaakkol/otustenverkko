@@ -150,15 +150,15 @@ impl GcpMqtt {
         let mut client = retry(ExponentialBackoff::default(), || async {
             info!("Creating client");
             //let mut client = Client::with_tls("mqtt.googleapis.com", 8883, ca_cert).await.map_err(GcpMqtt::err_mapper)?;
-            let mut mqtt_init = MqttInit {
+            let mqtt_init = MqttInit {
                 address: "mqtt.googleapis.com".to_string(),
                 port: 8883,
                 ..Default::default()
             };
 
-            mqtt_init.set_certificate(ca_cert).map_err(GcpMqtt::err_mapper)?;
+            //mqtt_init.set_certificate(ca_cert).map_err(GcpMqtt::err_mapper)?;
 
-            let mut client = mqtt_init.with_tls().await.map_err(GcpMqtt::err_mapper)?;
+            let mut client = mqtt_init.with_tls(ca_cert).await.map_err(GcpMqtt::err_mapper)?;
 
             client.connect(keep_alive, &client_id, Some("unused"), Some(&jwt_password[..]), false)
                 .await
@@ -458,7 +458,7 @@ mod tests {
     fn test_jwt(){
         init();
 
-        let path = env::var("CERT").unwrap();
+        let path = env::var("CERT").expect("CERT environment variable not set");
         let path = Path::new(&path);
 
         let mut f = File::open(path).unwrap();
@@ -467,7 +467,7 @@ mod tests {
         // read the whole file
         f.read_to_end(&mut private_cert).unwrap();
 
-        let path = env::var("PUBLIC_CERT").unwrap();
+        let path = env::var("PUBLIC_CERT").expect("PUBLIC_CERT environment variable not set");
         let path = Path::new(&path);
 
         let mut f = File::open(path).unwrap();

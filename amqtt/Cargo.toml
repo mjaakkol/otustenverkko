@@ -2,7 +2,7 @@
 name = "amqtt"
 version = "0.1.0"
 authors = ["Mikko Jaakkola <mikko.la.jaakkola@gmail.com>"]
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -12,7 +12,7 @@ smol = "1"
 futures-lite = "1"
 futures = "0.3"
 mqttrs = "0.4"
-bytes = "0.6"
+bytes = "1"
 thiserror = "1"
 log = { version = "0.4", features = ["std", "serde", "max_level_debug", "release_max_level_warn"] }
 jsonwebtoken = "7"
@@ -20,13 +20,14 @@ serde = { version="1", features = ["derive"] }
 serde_json = "1"
 chrono = {version = "0.4", features = ["serde"]}
 backoff = { version = "0.3", features = ["async-std"] }
-rustls = "0.19"
+rustls = { version = "0.20", features = ["dangerous_configuration"] }
+futures-rustls = "0.22.0"
+x509-parser = { version = "0.12", features = ["verify"] }
 
-[dependencies.async-tls]
-version = "0.11"
-default-features = false
-features = ["client"]
+#[dependencies.async-tls]
+#version = "0.11"
+#default-features = false
+#features = ["client"]
 
 [dev-dependencies]
-env_logger = "0.8"
-anyhow = "1.0"
+env_logger = "0.9"
