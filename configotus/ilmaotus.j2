@@ -1,0 +1,8 @@
+CERT=/etc/ilmaotus/{{ device_id~'_X509.pem' }}
+GOOGLE_ROOT_CERT=/etc/ilmaotus/roots.pem
+PROJECT_ID={{ project }}
+REGION={{ region }}
+REGISTRY_ID={{ registry }}
+DEVICE_ID={{ device_id }}
+RUST_LOG=debug
+RUST_BACKTRACE=1

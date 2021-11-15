@@ -1,0 +1,54 @@
+---
+# This is playbook for sending binary file, installing and (re)starting the application as daemon
+
+- name: Transfer ilmaotus and start the service
+  hosts: all
+  become: yes
+  tasks:
+    - name: Copy executable file
+      ansible.builtin.copy:
+        src:  ../ilmaotus/target/armv7-unknown-linux-gnueabihf/debug/ilmaotus
+        dest: /sbin/ilmaotus
+        owner: root
+        mode: '0755'
+      register: result
+      notify: Restart daemon
+
+    - name: Copy daemon file
+      ansible.builtin.copy:
+        src:  ../configotus/ilmaotus.service
+        dest: /etc/systemd/systemd
+      notify: Restart daemon
+      when: result is succeeded
+
+    - name: Find cert file
+      ansible.builtin.find:
+        file_type: file
+        paths: /etc/ilmaotus
+        patterns: '*_X509.pem'
+      register: cert_files
+
+    - name: Set cert based facts
+      ansible.builtin.set_fact:
+        # -21:-9 drops _X509.pem while saving MAC 'deadbeef'
+        device_id: "{{ (cert_files['files'] | first)['path'][-21:-9] }}"
+
+    - name: Copy environment parameters
+      ansible.builtin.template:
+        src: ../configotus/ilmaotus.j2
+        dest: /etc/ilmaotus/ilmaotus.conf
+      notify: Restart daemon
+      when: cert_files is succeeded
+
+    - name: Ensure that Ilmaotus is running
+      ansible.builtin.service:
+        name: ilmaotus
+        state: started
+
+  handlers:
+    - name: Restart daemon
+      ansible.builtin.service:
+        name: ilmaotus
+        daemon_reload: yes
+        state: restarted
+        enabled: yes
