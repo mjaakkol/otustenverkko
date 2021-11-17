@@ -1,0 +1,13 @@
+[Unit]
+Description=Ilmaotus service measuring air-quality
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/sbin/ilmaotus
+EnvironmentFile=/etc/ilmaotus/ilmaotus.conf
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=network-online.target
