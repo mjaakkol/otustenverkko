@@ -7,7 +7,7 @@
   tasks:
     - name: Copy executable file
       ansible.builtin.copy:
-        src:  ../ilmaotus/target/armv7-unknown-linux-gnueabihf/debug/ilmaotus
+        src: ../ilmaotus/target/armv7-unknown-linux-gnueabihf/debug/ilmaotus
         dest: /sbin/ilmaotus
         owner: root
         mode: '0755'
@@ -16,8 +16,9 @@
 
     - name: Copy daemon file
       ansible.builtin.copy:
-        src:  ../configotus/ilmaotus.service
+        src: ../configotus/ilmaotus.service
         dest: /etc/systemd/systemd
+        mode: '0644'
       notify: Restart daemon
       when: result is succeeded
 
@@ -37,6 +38,7 @@
       ansible.builtin.template:
         src: ../configotus/ilmaotus.j2
         dest: /etc/ilmaotus/ilmaotus.conf
+        mode: '0644'
       notify: Restart daemon
       when: cert_files is succeeded
 

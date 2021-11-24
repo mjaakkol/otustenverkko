@@ -11,9 +11,9 @@
     - name: Find interface
       ansible.builtin.set_fact:
         device_id: "{{ ansible_facts[ansible_facts['interfaces']
-        | select('match', 'en')
-        | first]['macaddress']
-        | ansible.netcommon.hwaddr('bare') }}"
+          | select('match', 'en')
+          | first]['macaddress']
+          | ansible.netcommon.hwaddr('bare') }}"
 
     - name: Provision python script
       ansible.builtin.command:
