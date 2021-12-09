@@ -11,7 +11,7 @@ use std::{
 
 use env_logger;
 use log::{info, error};
-//use anyhow::{Context, Result};
+use anyhow::Context;
 
 use jsonwebtoken::Algorithm;
 
@@ -40,8 +40,6 @@ use messages::{
     EnvironmentData,
     //Configuration
 };
-
-
 
 mod sensor;
 mod messages;
@@ -73,7 +71,7 @@ async fn start_cloud() -> GcpMqtt {
         30_u16,
         user_cert,
         &ca_cert
-    ).await.unwrap()
+    ).await.with_context(|| "Failed to create GCP MQTT").unwrap()
 }
 
 async fn sample(sensor: &mut Box<dyn sensor::Sensor>) -> EnvironmentData {
@@ -109,12 +107,13 @@ fn main() {
     sensor.initialize().unwrap();
 
     smol::block_on(async {
+        info!("Started async block");
         let mut gcp_mqtt: GcpMqtt = start_cloud().await;
 
         gcp_mqtt.set_device_state(&"up".to_owned()).await.unwrap();
 
         let mut measurements = EnvironmentDataBlocks::new();
-
+        info!("About to start loop");
         loop {
             for _ in 1_usize..n_samples_per_packet {
                 let packet_result = gcp_mqtt.wait_channels().or(async {

@@ -808,57 +808,144 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
     }
 }
 
-struct SelfSignedCertVerifier {
-    certs: Vec<u8>,
+struct SelfSignedCertVerifier<'a> {
+    raw_certs: Vec<u8>,
+    certs: Vec<X509Certificate<'a>>,
 }
 
-impl SelfSignedCertVerifier {
+impl<'a> SelfSignedCertVerifier<'a> {
     fn new(root_cert: &[u8]) -> Self {
+        let raw_certs = root_cert.to_vec();
+        let mut certs = Vec::new();
+
+        for pem in Pem::iter_from_buffer(&raw_certs) {
+            let x509 = pem
+                        .expect("this certificate is broken")
+                        .parse_x509()
+                        .expect("X.509: decoding DER failed");
+            assert_eq!(x509.tbs_certificate.version, X509Version::V3);
+            certs.push(x509);
+        }
+
         Self {
-            certs: Vec::from(root_cert)
+            raw_certs,
+            certs
         }
     }
 
     fn check_signature(&self, cert: &Certificate) -> Result<HandshakeSignatureValid, Error> {
-        let res = X509Certificate::from_der(&cert.0);
-        match res {
-            Ok((rem, xcert)) => {
-                assert!(rem.is_empty());
+        if let Ok((rem, xcert)) = X509Certificate::from_der(&cert.0) {
+            assert!(rem.is_empty());
 
-                info!("X.509 Subject: {}", xcert.subject());
-                info!("X.509 Issuer: {}", xcert.issuer());
-                info!("X.509 serial: {}", xcert.tbs_certificate.raw_serial_as_string());
-                //
-                //assert_eq!(xcert.version(), X509Version::V3);
+            info!("X.509 Subject: {}", xcert.subject());
+            info!("X.509 Issuer: {}", xcert.issuer());
+            info!("X.509 serial: {}", xcert.tbs_certificate.raw_serial_as_string());
+            //
+            //assert_eq!(xcert.version(), X509Version::V3);
 
-                for pem in Pem::iter_from_buffer(&self.certs) {
-                    let pem = pem.expect("this certificate is fucked");
-                    let x509 = pem.parse_x509().expect("X.509: decoding DER failed");
-                    assert_eq!(x509.tbs_certificate.version, X509Version::V3);
+            /*for pem in Pem::iter_from_buffer(&self.certs) {
+                let pem = pem.expect("this certificate is fucked");
+                let x509 = pem.parse_x509().expect("X.509: decoding DER failed");
+                assert_eq!(x509.tbs_certificate.version, X509Version::V3);*/
 
-                    let issuer_public_key = x509.public_key();
-                    if xcert.verify_signature(Some(issuer_public_key)).is_ok() {
-                        warn!("Signature validation worked");
-                        return Ok(HandshakeSignatureValid::assertion())
-                    }
+            for x509 in &self.certs {
+                let issuer_public_key = x509.public_key();
+                if xcert.verify_signature(Some(issuer_public_key)).is_ok() {
+                    warn!("Signature validation worked");
+                    return Ok(HandshakeSignatureValid::assertion())
                 }
-            },
-            _ => {
-                error!("Certification parsin failed");
-                return Err(Error::InvalidCertificateEncoding)
-            },
+            }
+            // We only end up here if the certificate signature didn't match
+            error!("verify_tls13_signature: error checking signature");
+            Err(Error::InvalidCertificateSignature)
         }
-        error!("verify_tls13_signature: error checking signature");
-        Err(Error::InvalidCertificateSignature)
+        else {
+            error!("Certification parsing failed");
+            Err(Error::InvalidCertificateEncoding)
+        }
+    }
+
+    fn verify_cert_info(&self, cert: &Certificate, server_name: &ServerName, now: &SystemTime) -> Result<bool, Error> {
+        if let Ok((rem, x509)) = X509Certificate::from_der(&cert.0) {
+            assert!(rem.is_empty());
+            info!("X.509 Subject: {}", x509.subject());
+            info!("X.509 Version: {}", x509.version());
+            info!("X.509 Issuer: {}", x509.issuer());
+            info!("X.509 serial: {}", x509.tbs_certificate.raw_serial_as_string());
+
+            let subject = x509.subject();
+
+            let matches_found: Vec::<_> = subject
+                .iter_common_name()
+                .filter(|name| {
+                    if let ServerName::DnsName(server) = server_name {
+                        if let Ok(cert_server_str) = name.as_str() {
+                            return cert_server_str == server.as_ref()
+                        }
+                    }
+                    false
+                })
+                .collect();
+
+            if matches_found.is_empty() {
+                error!("No DN match found");
+                return Err(Error::InvalidCertificateData(String::from("No DN match found")));
+            }
+
+            // TODO: SAN validation should be added
+
+            // Starting with timing topic
+            let asn_time = ASN1Time::from_timestamp(
+                now.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs().try_into().unwrap()
+            );
+
+            if !x509.validity().is_valid_at(asn_time) {
+                error!("Outside of validity period");
+                return Err(Error::InvalidCertificateData(String::from("Invalid time information")));
+            }
+
+            if x509.version() != X509Version::V3 {
+                warn!("Certificate version is not V3 but {}", x509.version());
+            }
+            Ok(self.verify_issuer(&x509.issuer()))
+        } else {
+            error!("Certificate parsing failed");
+            Err(Error::InvalidCertificateEncoding)
+        }
+    }
+
+    fn verify_issuer(&self, server_cert_issuer: &X509Name) -> bool {
+        /*
+        for pem in Pem::iter_from_buffer(&self.certs) {
+            let pem = pem.expect("this certificate is broken");
+            let xcert = pem.parse_x509().expect("X.509: decoding DER failed");*/
+
+        for xcert in &self.certs {
+            info!("---------Stored-------------");
+            info!("X.509 Subject: {}", xcert.subject());
+            info!("X.509 Version: {}", xcert.version());
+            info!("X.509 Issuer: {}", xcert.issuer());
+            info!("X.509 serial: {}", xcert.tbs_certificate.raw_serial_as_string());
+
+            if xcert.subject() == server_cert_issuer {
+                return true;
+            }
+            else {
+                warn!("Remote issuer: {}", server_cert_issuer);
+                warn!("Local issuer: {} Subject: {}", xcert.issuer(), xcert.subject());
+            }
+        }
+        error!("Didn't find the right issuer");
+        false
     }
 }
 
 
-impl rustls::client::ServerCertVerifier for SelfSignedCertVerifier {
+impl rustls::client::ServerCertVerifier for SelfSignedCertVerifier<'_> {
     fn verify_server_cert(
         &self,
         end_entity: &Certificate,
-        _intermediates: &[Certificate],
+        intermediates: &[Certificate],
         server_name: &ServerName,
         _scts: &mut dyn Iterator<Item = &[u8]>,
         _ocsp_response: &[u8],
@@ -867,74 +954,29 @@ impl rustls::client::ServerCertVerifier for SelfSignedCertVerifier {
 
         info!("Server-name {:?}", server_name);
 
-        // TODO: Check that certificate matches DNS-name
-        // TODO: Flag UnknownIssuer
-        let res = X509Certificate::from_der(end_entity.0.as_slice());
-        match res {
-            Ok((rem, x509)) => {
-                assert!(rem.is_empty());
-                //
-                info!("-----------Entity certificate---------------");
-                info!("X.509 Subject: {}", x509.subject());
-                info!("X.509 Version: {}", x509.version());
-                info!("X.509 Issuer: {}", x509.issuer());
-                info!("X.509 serial: {}", x509.tbs_certificate.raw_serial_as_string());
-
-                let subject = x509.subject();
-
-                let matches_found: Vec::<_> = subject
-                    .iter_common_name()
-                    .filter(|name| {
-                        if let ServerName::DnsName(server) = server_name {
-                            if let Ok(cert_server_str) = name.as_str() {
-                                return cert_server_str == server.as_ref()
-                            }
-                        }
-                        false
-                    })
-                    .collect();
-
-                if matches_found.is_empty() {
-                    error!("No DN match found");
-                    return Err(Error::InvalidCertificateData(String::from("No DN match found")));
+        if !intermediates.is_empty() {
+            warn!("---------Intermediates------------");
+            for icert in intermediates {
+                if self.verify_cert_info(icert, &server_name, &now).unwrap() {
+                    return Ok(rustls::client::ServerCertVerified::assertion());
                 }
-
-                // TODO: SAN validation should be added
-
-                // Starting with timing topic
-                let asn_time = ASN1Time::from_timestamp(
-                    now.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs().try_into().unwrap()
-                );
-
-                if !x509.validity().is_valid_at(asn_time) {
-                    error!("Outside of validity period");
-                    return Err(Error::InvalidCertificateData(String::from("Invalid time information")));
-                }
-
-                if x509.version() != X509Version::V3 {
-                    warn!("Certificate version is not V3 but {}", x509.version());
-                }
-
-                for pem in Pem::iter_from_buffer(&self.certs) {
-                    let pem = pem.expect("this certificate is broken");
-                    let xcert = pem.parse_x509().expect("X.509: decoding DER failed");
-
-                    info!("---------Stored-------------");
-                    info!("X.509 Subject: {}", xcert.subject());
-                    info!("X.509 Version: {}", xcert.version());
-                    info!("X.509 Issuer: {}", xcert.issuer());
-                    info!("X.509 serial: {}", xcert.tbs_certificate.raw_serial_as_string());
-
-                    if xcert.issuer() == x509.issuer() {
-                        return Ok(rustls::client::ServerCertVerified::assertion());
-                    }
-                }
-                return Err(Error::InvalidCertificateData(String::from("No valid DN found for issuer")));
-            },
-            _ => error!("x509 parsing failed: {:?}", res),
+            }
+            warn!("---------Intermediates ends------------");
+        } else {
+            warn!("Intermediate certificates empty");
         }
 
-        return Err(Error::InvalidCertificateEncoding);
+        info!("Checking root certificate");
+        if self.verify_cert_info(end_entity, &server_name, &now).unwrap() {
+            return Ok(rustls::client::ServerCertVerified::assertion());
+        }
+
+        error!("Didn't find the right issuer");
+        return Err(Error::InvalidCertificateData(String::from("No valid DN found for issuer")));
+
+        // TODO: Check that certificate matches DNS-name
+        // TODO: Flag UnknownIssuer
+        //return Err(Error::InvalidCertificateEncoding);
     }
 
     fn verify_tls12_signature(
@@ -1013,11 +1055,11 @@ impl MqttInit {
     pub async fn with_tls(self, root_cert: &[u8]) -> Result<Client, MqttError> {
         info!("init_tls");
 
-        let verifier = SelfSignedCertVerifier::new(root_cert);
+        let verifier = Arc::new(SelfSignedCertVerifier::new(root_cert));
 
         let client_config = ClientConfig::builder()
         .with_safe_defaults()
-        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();
 
         warn!("Cert inserted");

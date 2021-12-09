@@ -69,7 +69,7 @@ pub enum GcpIoTError {
     IOError(#[from] std::io::Error),
 
     /// Errors derived from sister MQTT module
-    #[error("transparent")]
+    #[error("MQTT error: {0}")]
     MqttError(#[from] MqttError),
 
     /// Errors derived from AsyncChannelRecvError

@@ -39,9 +39,9 @@ protoc-rust = "2.0"
 [profile.release]
 lto = true
 
-[build]
-target = "armv7-unknown-linux-gnueabihf"
-rustflags = ["-C", "linker=arm-none-linux-gnueabihf-gcc"]
+#[build]
+#target = "armv7-unknown-linux-gnueabihf"
+#rustflags = ["-C", "linker=arm-none-linux-gnueabihf-gcc"]
 
-[target.armv7-unknown-linux-gnueabihf]
-linker = "arm-none-linux-gnueabihf-gcc"
+#[target.armv7-unknown-linux-gnueabihf]
+#linker = "arm-none-linux-gnueabihf-gcc"
