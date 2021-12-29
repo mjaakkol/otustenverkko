@@ -11,6 +11,7 @@
 
 
 mod packets;
+mod validation;
 
 /// Asynchronous MQTT implementation.
 ///

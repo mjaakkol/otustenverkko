@@ -42,12 +42,10 @@ use futures_rustls::{
     }
 };
 
-use rustls::{
-    internal::msgs::handshake::DigitallySignedStruct, Certificate, client::HandshakeSignatureValid,
-    client::ServerCertVerified, Error, ClientConfig
-};
+use rustls::ClientConfig;
 
-use x509_parser::prelude::*;
+use crate::validation::SelfSignedCertVerifier;
+
 use log::{debug, info, error, warn};
 use crate::packets;
 
@@ -122,6 +120,10 @@ pub enum MqttError {
     /// Parsing Certificate failed
     #[error("Parsing PEM failed")]
     ParsingCertificateFailed,
+
+    /// Unknown issuer
+    #[error("Unknown certificate issuer")]
+    UnknownIssuer,
 
     /// Unsupported Qos
     #[error("Unsupported MQTT Qos value {0}")]
@@ -808,6 +810,7 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
     }
 }
 
+/*
 struct SelfSignedCertVerifier<'a> {
     raw_certs: Vec<u8>,
     certs: Vec<X509Certificate<'a>>,
@@ -999,6 +1002,7 @@ impl rustls::client::ServerCertVerifier for SelfSignedCertVerifier<'_> {
         return self.check_signature(cert);
     }
 }
+*/
 
 /// Builder MQTT Client
 ///
@@ -1185,6 +1189,7 @@ mod tests {
         // read the whole file
         f.read_to_end(&mut ca_cert).unwrap();
 
+        info!("Certs loaded. Ready to start the test");
         /*
         let s = match std::str::from_utf8(&ca_cert) {
             Ok(v) => warn!("{}", v),
