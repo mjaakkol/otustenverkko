@@ -1,7 +1,7 @@
 use std::{
     fmt,
     io,
-    time::{Duration, SystemTime},
+    time::Duration,
     net::ToSocketAddrs,
     marker,
     collections::HashMap,

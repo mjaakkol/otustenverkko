@@ -1,8 +1,8 @@
 use std::time::SystemTime;
-use log::{debug, info, error, warn};
+use log::{info, error, warn};
 
 use rustls::{
-    internal::msgs::handshake::DigitallySignedStruct, Certificate, client::HandshakeSignatureValid,
+    Certificate,
     client::ServerCertVerified, Error
 };
 
@@ -39,8 +39,8 @@ impl<'a> Cert<'a> {
 
     pub fn used_as_ca(&self) -> bool {
         match self.ee_or_ca {
-            EndEntityOrCa::EndEntity => true,
-            EndEntityOrCa::Ca(_) => false
+            EndEntityOrCa::EndEntity => false,
+            EndEntityOrCa::Ca(_) => true
         }
     }
 
@@ -80,29 +80,6 @@ impl SelfSignedCertVerifier {
             raw_certs,
             pems
         }
-    }
-
-    fn check_signature(&self, xcert: &X509Certificate) -> Result<HandshakeSignatureValid, Error> {
-        for pem in &self.pems {
-            let x509 = pem.parse_x509().unwrap();
-
-            let issuer = xcert.issuer();
-            if issuer != x509.subject() {
-                continue;
-            }
-
-            // Issuer matches and let's check the signature
-            info!("Issuer {} matches with a root", issuer);
-
-            let issuer_public_key = x509.public_key();
-            if xcert.verify_signature(Some(issuer_public_key)).is_ok() {
-                warn!("Signature validation worked");
-                return Ok(HandshakeSignatureValid::assertion())
-            }
-        }
-        // We only end up here if the certificate signature didn't match
-        error!("verify_tls13_signature: error checking signature");
-        Err(Error::InvalidCertificateSignature)
     }
 
     fn verify_server_name(cert: &X509Certificate, server_name: &ServerName) -> Result<(), Error> {
@@ -178,11 +155,12 @@ impl SelfSignedCertVerifier {
             const MAX_SUB_CA_COUNT: usize = 6;
 
             if sub_ca_count >= MAX_SUB_CA_COUNT {
+                error!("Hitting max count limit");
                 return Err(Error::General(String::from("Unknown Issuer")));
             }
-            else {
-                assert_eq!(0, sub_ca_count);
-            }
+        }
+        else {
+            assert_eq!(0, sub_ca_count);
         }
 
         for pem in anchor_pems {
@@ -193,6 +171,9 @@ impl SelfSignedCertVerifier {
                 continue;
             }
 
+            info!("Matching issuer {} found", issuer);
+
+            // TODO: Check anchor signatures
             return Ok(())
         }
 
@@ -232,13 +213,13 @@ impl SelfSignedCertVerifier {
             };
 
             SelfSignedCertVerifier::verify_chain(anchor_pems, &potential_issuer, intermediate_certs, next_sub_ca_count)
-        })?;
+        })
 
         // We didn't find the end of the chain so
         // TODO: Add intermediate chain building here
         // We only end up here if the certificate signature didn't match
-        error!("Didn't find candidates from intermediate certificates");
-        Err(Error::General(String::from("Unknown Issuer")))
+        //error!("Didn't find candidates from intermediate certificates");
+        //Err(Error::General(String::from("Unknown Issuer")))
     }
 
     fn verify_cert_info(x509: &X509Certificate) -> Result<(), Error> {
@@ -296,6 +277,7 @@ impl rustls::client::ServerCertVerifier for SelfSignedCertVerifier {
         return Err(Error::InvalidCertificateData(String::from("No valid DN found for issuer")));
     }
 
+    /* We can use the default implementations for signature validation
     fn verify_tls12_signature(
         &self,
         _message: &[u8],
@@ -309,6 +291,7 @@ impl rustls::client::ServerCertVerifier for SelfSignedCertVerifier {
         return self.check_signature(&x509);
     }
 
+
     fn verify_tls13_signature(
         &self,
         _message: &[u8],
@@ -320,7 +303,7 @@ impl rustls::client::ServerCertVerifier for SelfSignedCertVerifier {
         // This certificate has been already validated so unwrapping is 'safe'
         let (_rem, x509) = X509Certificate::from_der(&cert.0).unwrap();
         self.check_signature(&x509)
-    }
+    }*/
 }
 
 // Borrowed from Webpki
