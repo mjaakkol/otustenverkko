@@ -34,7 +34,7 @@ amqtt = { path="../amqtt" }
 embedded-hal-mock = "0.7"
 
 [build-dependencies]
-protoc-rust = "2.0"
+protoc-rust = "2"
 
 [profile.release]
 lto = true
@@ -43,5 +43,5 @@ lto = true
 #target = "armv7-unknown-linux-gnueabihf"
 #rustflags = ["-C", "linker=arm-none-linux-gnueabihf-gcc"]
 
-#[target.armv7-unknown-linux-gnueabihf]
-#linker = "arm-none-linux-gnueabihf-gcc"
+[target.armv7-unknown-linux-gnueabihf]
+linker = "arm-linux-gnueabihf-gcc"

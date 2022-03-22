@@ -8,6 +8,9 @@
       ansible.builtin.command:
         cmd: cargo build --target=armv7-unknown-linux-gnueabihf
         chdir: ../ilmaotus
+      # This will help with linker error
+      environment:
+        CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: /usr/bin/arm-linux-gnueabihf-gcc
       register: build_output
       changed_when: build_output.rc != 0
 
