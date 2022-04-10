@@ -68,7 +68,7 @@ async fn start_cloud() -> GcpMqtt {
         cloud_region,
         registry_id,
         device_id,
-        30_u16,
+        15_u16,
         user_cert,
         &ca_cert
     ).await.with_context(|| "Failed to create GCP MQTT").unwrap()

@@ -84,6 +84,43 @@ struct Claims {
     aud: String
 }
 
+/// Connects the device to Google cloud IoT framework
+///
+/// Connecting the device to Google cloud authenticating the device. This is internal method and needs to be
+/// called prior the expiration period as otherwise the connection will drop.
+async fn connect(
+    client_id: &str,
+    project_id: &str,
+    algorithm: &Algorithm,
+    expiration: &Duration,
+    keep_alive: u16,
+    key: &EncodingKey,
+    ca_cert: &[u8]
+) -> Result<Client, GcpIoTError> {
+    let jwt_password = GcpMqtt::create_token(key, project_id, algorithm, expiration)?;
+
+    let client = retry(ExponentialBackoff::default(), || async {
+        info!("Creating client");
+        //let mut client = Client::with_tls("mqtt.googleapis.com", 8883, ca_cert).await.map_err(GcpMqtt::err_mapper)?;
+        let mqtt_init = MqttInit {
+            address: "mqtt.googleapis.com".to_string(),
+            port: 8883,
+            ..Default::default()
+        };
+
+        let mut client = mqtt_init.with_tls(ca_cert).await.map_err(GcpMqtt::err_mapper)?;
+
+        client.connect(keep_alive, &client_id, Some("unused"), Some(&jwt_password[..]), false)
+            .await
+            .map_err(GcpMqtt::err_mapper)?;
+        Ok(client)
+    })
+    .await?;
+
+    Ok(client)
+}
+
+
 /// Google cloud MQTT client
 ///
 /// Client for engaging with Google IoT hub.
@@ -91,7 +128,8 @@ struct Claims {
 pub struct GcpMqtt {
     /// Algorithm for generating token for web token
     algorithm: Algorithm,
-    /// Token expiration period. You want this to be less than 30 minutes
+    /// Token expiration period. Expiration will cause reauthentiction. This value cannot exceed
+    /// 24h - skew (10min). 
     expiration: Duration,
     /// Google Core IoT project name
     project_id: String,
@@ -99,7 +137,10 @@ pub struct GcpMqtt {
     device_id: String,
     /// Client ID
     client_id: String,
+    /// Client certificate for authentication
     cert: Vec<u8>,
+    /// Server certification for authenticating the server
+    ca_cert: Vec<u8>,
     config: Receiver<Vec<u8>>,
     command: Receiver<Vec<u8>>,
     client: Client,
@@ -143,31 +184,7 @@ impl GcpMqtt {
     ) -> Result<Self, GcpIoTError> {
         let key = EncodingKey::from_ec_pem(&cert).map_err(|source| GcpIoTError::JsonWebTokenError { source })?;
 
-        let client_id = format!("projects/{}/locations/{}/registries/{}/devices/{}", project_id, cloud_region, registry, device_id);
-
-        let jwt_password = GcpMqtt::create_token(&key, &project_id, &algorithm, &expiration)?;
-
-        let mut client = retry(ExponentialBackoff::default(), || async {
-            info!("Creating client");
-            //let mut client = Client::with_tls("mqtt.googleapis.com", 8883, ca_cert).await.map_err(GcpMqtt::err_mapper)?;
-            let mqtt_init = MqttInit {
-                address: "mqtt.googleapis.com".to_string(),
-                port: 8883,
-                ..Default::default()
-            };
-
-            //mqtt_init.set_certificate(ca_cert).map_err(GcpMqtt::err_mapper)?;
-
-            let mut client = mqtt_init.with_tls(ca_cert).await.map_err(GcpMqtt::err_mapper)?;
-
-            client.connect(keep_alive, &client_id, Some("unused"), Some(&jwt_password[..]), false)
-                .await
-                .map_err(GcpMqtt::err_mapper)?;
-            Ok(client)
-        })
-        .await?;
-
-        debug!("MQTTInit done");
+        // Creating the standard topics to Gcp MQTT. Client topics are added separately
         let topic_prefix = format!("/devices/{}/", device_id);
 
         let gcp_subscription = vec![
@@ -175,6 +192,12 @@ impl GcpMqtt {
             (topic_prefix.to_owned()+"commands/#", Qos::AtLeastOnce)
             ];
 
+
+        let client_id = format!("projects/{}/locations/{}/registries/{}/devices/{}", project_id, cloud_region, registry, device_id);
+
+        let mut client = connect(&client_id, &project_id, &algorithm, &expiration, keep_alive, &key, ca_cert).await?;
+
+        debug!("MQTTInit done");
         let mut subs = client.subscribe(&gcp_subscription).await?;
 
         let (config, _) = subs.remove(0)?;
@@ -189,6 +212,7 @@ impl GcpMqtt {
             device_id,
             client_id,
             cert,
+            ca_cert : ca_cert.to_vec(),
             config,
             command,
             client,
@@ -273,22 +297,10 @@ impl GcpMqtt {
         Ok(self)
     }
 
-    /// Connects the device to Google cloud IoT framework
-    ///
-    /// Connecting the device to Google cloud authenticating the device. This is internal method and needs to be
-    /// called prior the expiration period as otherwise the connection will drop.
-    async fn connect(&mut self) -> Result<&mut Self, GcpIoTError> {
-        let jwt_password = GcpMqtt::create_token(&self.key, &self.project_id, &self.algorithm, &self.expiration)?;
-
-        self.client.connect(self.keep_alive, &self.client_id, Some("unused"), Some(&jwt_password[..]), false)
-            .await
-            .map_err(GcpMqtt::err_mapper)?;
-        Ok(self)
-    }
 
     /// Subscribe to a set of topics.
     ///
-    /// Enables client to listedn given topics with the defined quality of the service. The outer result
+    /// Enables client to listen given topics with the defined quality of the service. The outer result
     /// indicates how the overall operation performed and each topic inside has a result of its own related to the
     /// status of the subscription.
     ///
