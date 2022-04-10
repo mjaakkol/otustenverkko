@@ -44,6 +44,7 @@ use messages::{
 mod sensor;
 mod messages;
 
+const KEEP_ALIVE_PERIOD:u16 = 30*60;
 
 async fn start_cloud() -> GcpMqtt {
     let path        = env::var("CERT").expect("No private cert environment variable");
@@ -68,7 +69,7 @@ async fn start_cloud() -> GcpMqtt {
         cloud_region,
         registry_id,
         device_id,
-        15_u16,
+        KEEP_ALIVE_PERIOD,
         user_cert,
         &ca_cert
     ).await.with_context(|| "Failed to create GCP MQTT").unwrap()

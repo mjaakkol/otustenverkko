@@ -755,7 +755,7 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
             ).or(
                 async {
                     Timer::after(Duration::from_secs(self.keep_alive as u64)).await;
-                    debug!("Keep-alive timeout");
+                    debug!("Keep-alive timeout {self.keep_alive}s");
                     ProcessLoop::Timeout
                 }
             ).await;
@@ -799,8 +799,8 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
                 },
                 ProcessLoop::ChannelPacket(msg) =>  self.write_packet(msg).await?,
                 ProcessLoop::Timeout => {
-                    warn!("Keep-alive timeout");
                     if self.manage_timeout().await.is_err() == true {
+                        warn!("PingResp timeout");
                         return Err(MqttError::PingRespTimeout);
                     }
                 },
