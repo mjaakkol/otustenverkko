@@ -755,7 +755,7 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
             ).or(
                 async {
                     Timer::after(Duration::from_secs(self.keep_alive as u64)).await;
-                    debug!("Keep-alive timeout {self.keep_alive}s");
+                    debug!("Keep-alive timeout {}s", self.keep_alive);
                     ProcessLoop::Timeout
                 }
             ).await;
