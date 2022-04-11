@@ -517,7 +517,7 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
             msg.req_future.complete_ok();
         }
         else {
-            error!("complete_packet error: Didn't find expected Pid");
+            error!("complete_packet error: Didn't find expected Pid:{pid}. Available Pids:{:?}", self.packets.keys());
         }
         debug!("Exit complete_packet");
     }
