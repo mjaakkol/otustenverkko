@@ -195,6 +195,9 @@ impl GcpMqtt {
 
         let client_id = format!("projects/{}/locations/{}/registries/{}/devices/{}", project_id, cloud_region, registry, device_id);
 
+        info!("Project ID:{} Region:{} Registry:{} Device ID:{}, token expiration:{:?} Keep-alive:{}", 
+            project_id, cloud_region, registry, device_id, expiration, keep_alive);
+
         let mut client = connect(&client_id, &project_id, &algorithm, &expiration, keep_alive, &key, ca_cert).await?;
 
         debug!("MQTTInit done");

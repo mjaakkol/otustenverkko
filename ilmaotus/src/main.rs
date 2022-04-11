@@ -4,7 +4,8 @@ use std::{
     path::Path,
     time::{
         Duration,
-        SystemTime
+        SystemTime,
+        Instant
     },
     str::from_utf8,
 };
@@ -44,6 +45,7 @@ use messages::{
 mod sensor;
 mod messages;
 
+const CONNECTION_RENEWAL_PERIOD: u32 = 1200;
 const KEEP_ALIVE_PERIOD:u16 = 30*60;
 
 async fn start_cloud() -> GcpMqtt {
@@ -64,7 +66,7 @@ async fn start_cloud() -> GcpMqtt {
 
     GcpMqtt::new(
         Algorithm::ES256,
-        Duration::from_secs(1200),
+        Duration::from_secs(CONNECTION_RENEWAL_PERIOD as u64),
         project_id,
         cloud_region,
         registry_id,
@@ -95,6 +97,40 @@ async fn sample(sensor: &mut Box<dyn sensor::Sensor>) -> EnvironmentData {
     measurement
 }
 
+struct Connection {
+    mqtt: GcpMqtt,
+    renewal_time: Instant
+}
+
+impl Connection {
+    async fn new() -> Self {
+        let renewal_time = Instant::now()
+            .checked_add(
+                // Reducing 11 minutes due to skewing
+                Duration::from_secs((CONNECTION_RENEWAL_PERIOD - 700) as u64)
+            ).unwrap();
+
+        Self {
+            mqtt: start_cloud().await,
+            renewal_time
+        }
+    }
+
+    async fn renew_connection_if_needed(mut self) -> Self {
+        // If we have passed the new time, then this turns in positive number
+        // and we need to renew the connection
+        if self.renewal_time.elapsed() > Duration::from_secs(0) {
+            self.mqtt.set_device_state(&"down".to_owned()).await.unwrap();
+            let mut gcp_mqtt = Self::new().await;
+            gcp_mqtt.mqtt.set_device_state(&"up".to_owned()).await.unwrap();
+            gcp_mqtt
+        }
+        else {
+            self
+        }
+    }
+}
+
 
 fn main() {
     env_logger::init();
@@ -109,13 +145,15 @@ fn main() {
 
     smol::block_on(async {
         info!("Started async block");
-        let mut gcp_mqtt: GcpMqtt = start_cloud().await;
-
-        gcp_mqtt.set_device_state(&"up".to_owned()).await.unwrap();
+        let mut connection = Connection::new().await;
 
         let mut measurements = EnvironmentDataBlocks::new();
         info!("About to start loop");
         loop {
+            connection = connection.renew_connection_if_needed().await;
+
+            let gcp_mqtt = &mut connection.mqtt;
+
             for _ in 1_usize..n_samples_per_packet {
                 let packet_result = gcp_mqtt.wait_channels().or(async {
                     Timer::after(Duration::from_secs(sample_interval as u64)).await;
