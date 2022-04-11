@@ -314,7 +314,7 @@ impl Client {
 
         match qos {
             Qos::AtMostOnce => {
-                debug!("starting Qos zero publishing");
+                debug!("starting Qos zero publishing to {topic_name}");
                 // Encode an MQTT Connect packet.
                 let pkt = Publish {
                         dup: false,
@@ -335,7 +335,7 @@ impl Client {
             },
             Qos::AtLeastOnce | Qos::ExactlyOnce => {
                 assert!(Qos::AtLeastOnce == qos);
-                debug!("starting Qos non-zero publishing");
+                debug!("starting Qos non-zero publishing to {topic_name}");
                 self.send_packet(|pid| {
                     // Encode an MQTT Connect packet.
 
