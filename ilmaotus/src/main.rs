@@ -11,7 +11,7 @@ use std::{
 };
 
 use env_logger;
-use log::{info, error};
+use log::{info, warn, error};
 use anyhow::Context;
 
 use jsonwebtoken::Algorithm;
@@ -99,28 +99,26 @@ async fn sample(sensor: &mut Box<dyn sensor::Sensor>) -> EnvironmentData {
 
 struct Connection {
     mqtt: GcpMqtt,
-    renewal_time: Instant
+    connection_creation: Instant
 }
 
 impl Connection {
     async fn new() -> Self {
-        let renewal_time = Instant::now()
-            .checked_add(
-                // Reducing 11 minutes due to skewing
-                Duration::from_secs((CONNECTION_RENEWAL_PERIOD - 700) as u64)
-            ).unwrap();
-
         Self {
             mqtt: start_cloud().await,
-            renewal_time
+            connection_creation: Instant::now()
         }
     }
 
     async fn renew_connection_if_needed(mut self) -> Self {
         // If we have passed the new time, then this turns in positive number
         // and we need to renew the connection
-        if self.renewal_time.elapsed() > Duration::from_secs(0) {
+        if self.connection_creation.elapsed() > Duration::from_secs((CONNECTION_RENEWAL_PERIOD - 700) as u64) {
+            warn!("Connection is renewed");
             self.mqtt.set_device_state(&"down".to_owned()).await.unwrap();
+            self.mqtt.disconnect().await.unwrap();
+
+            // Now we are ready to start the new connection
             let mut gcp_mqtt = Self::new().await;
             gcp_mqtt.mqtt.set_device_state(&"up".to_owned()).await.unwrap();
             gcp_mqtt
