@@ -336,26 +336,58 @@ impl Client {
             Qos::AtLeastOnce | Qos::ExactlyOnce => {
                 assert!(Qos::AtLeastOnce == qos);
                 debug!("starting Qos non-zero publishing to {topic_name}");
-                self.send_packet(|pid| {
-                    // Encode an MQTT Connect packet.
 
-                    let pkt = mqttrs::Publish {
-                                dup: false,
-                                qospid : mqttrs::QosPid::AtLeastOnce(pid),
-                                retain: false,
-                                topic_name,
-                                payload
-                    }.into();
-                    let length = mqttrs::encode_slice(&pkt, &mut raw_buf)?;
-                    let buf = BytesMut::from(&raw_buf[..length]);
+                let used_pid = self.pid;
+                self.pid = self.pid + 1;
 
-                    let pid = pid.get();
+                let pkt = mqttrs::Publish {
+                    dup: false,
+                    qospid : mqttrs::QosPid::AtLeastOnce(used_pid),
+                    retain: false,
+                    topic_name,
+                    payload
+                }.into();
 
-                    let msg = MqttMsg::new((pid as u16).into(), buf);
-                    let fut = msg.get_packet_future();
-                    let channel_packet = ChannelPacket::Generic(msg);
+                let length = mqttrs::encode_slice(&pkt, &mut raw_buf)?;
+                let buf = BytesMut::from(&raw_buf[..length]);
 
-                    Ok((channel_packet, fut, pid))
+                // Get the integer version
+                let pid = used_pid.get();
+
+                let msg = MqttMsg::new((pid as u16).into(), buf);
+                let fut = msg.get_packet_future();
+                let channel_packet = ChannelPacket::Generic(msg);
+
+                self.tx_stream.send(channel_packet).await.map_err( |_| {
+                    MqttError::AsyncChannelSendError
+                })?;
+
+                
+                fut.or(async {
+                    for retry_count in 1..4 {
+                        Timer::after(Duration::from_secs(1)).await;
+
+                        let pkt = mqttrs::Publish {            
+                            dup: true, // This is resent
+                            qospid : mqttrs::QosPid::AtLeastOnce(used_pid),
+                            retain: false,
+                            topic_name,
+                            payload
+                        }.into();
+
+                        let length = mqttrs::encode_slice(&pkt, &mut raw_buf)?;
+                        let buf = BytesMut::from(&raw_buf[..length]);
+
+                        let channel_packet = ChannelPacket::Generic(MqttMsg::new(-1, buf));
+        
+                        self.tx_stream.send(channel_packet).await.map_err( |_| {
+                            MqttError::AsyncChannelSendError
+                        })?;
+
+                        warn!("Publish timeout and retry number {retry_count}");
+                    };
+                    // All retries have been exhausted if we end up this far
+                    Err(MqttError::ConnectionTimeout)
                 }).await?;
             }
         }
@@ -573,7 +605,7 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
             }
         }
         else {
-            error!("complete_subscription error: Didn't find expected Pid");
+            error!("complete_subscription error: Didn't find expected Pid: {pid}");
         }
     }
 
