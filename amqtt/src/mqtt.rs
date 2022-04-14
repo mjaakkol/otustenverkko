@@ -1,53 +1,27 @@
-use std::{
-    fmt,
-    io,
-    time::Duration,
-    net::ToSocketAddrs,
-    marker,
-    collections::HashMap,
-    sync::Arc,
-};
+use std::{collections::HashMap, fmt, io, marker, net::ToSocketAddrs, sync::Arc, time::Duration};
 
 //TODO: If smol will ever include stream.split, the reference for futures crate can be removed.
 use futures::io::AsyncReadExt;
 
 use smol::{
-    channel::{
-        unbounded,
-        Sender,
-        RecvError,
-        Receiver
-    },
-    io::AsyncWriteExt,
-    net,
+    channel::{unbounded, Receiver, RecvError, Sender},
     future::FutureExt,
-    Timer
+    io::AsyncWriteExt,
+    net, Timer,
 };
 
 use bytes::BytesMut;
-use mqttrs::{
-    self,
-    Packet,
-    Connect,
-    Pid,
-    Publish,
-    Subscribe,
-};
+use mqttrs::{self, Connect, Packet, Pid, Publish, Subscribe};
 use thiserror::Error;
 
-use futures_rustls::{
-    TlsConnector,
-    rustls::{
-        ServerName,
-    }
-};
+use futures_rustls::{rustls::ServerName, TlsConnector};
 
 use rustls::ClientConfig;
 
 use crate::validation::SelfSignedCertVerifier;
 
-use log::{debug, info, error, warn};
 use crate::packets;
+use log::{debug, error, info, warn};
 
 const MQTT_DEFAULT: u16 = 1883;
 
@@ -56,11 +30,11 @@ pub(crate) enum PacketFutureResult {
     /// Packet send successfully
     Ok,
     /// Subscription received either with valid values or with error
-    Subscriptions(Vec<Result<(Receiver<Vec<u8>>, Qos), MqttError>>)
+    Subscriptions(Vec<Result<(Receiver<Vec<u8>>, Qos), MqttError>>),
 }
 
 /// MQTT Subsription
-pub(crate) type Subscriptions = Result<PacketFutureResult,MqttError>;
+pub(crate) type Subscriptions = Result<PacketFutureResult, MqttError>;
 
 /// Mqtt module errors
 #[derive(Error, Debug)]
@@ -145,9 +119,8 @@ enum ProcessLoop {
     DataReceived(usize),
     ChannelPacket(ChannelPacket),
     Timeout,
-    Error(MqttError)
+    Error(MqttError),
 }
-
 
 /// Asynchronous MQTT client
 ///
@@ -163,19 +136,19 @@ pub struct Client {
 #[derive(Clone)]
 enum ChannelPacket {
     Generic(MqttMsg),
-    Connect(MqttMsg,u16),
-    RemovePacket(u16)
+    Connect(MqttMsg, u16),
+    RemovePacket(u16),
 }
 
 #[derive(Clone)]
 struct MqttMsg {
-    pid : i32,
-    buffer : Arc<BytesMut>,
+    pid: i32,
+    buffer: Arc<BytesMut>,
     req_future: packets::PacketFuture,
 }
 
 impl MqttMsg {
-    fn new(pid: i32, buffer : BytesMut/*, meta: Meta*/) -> Self {
+    fn new(pid: i32, buffer: BytesMut /*, meta: Meta*/) -> Self {
         Self {
             pid,
             buffer: Arc::new(buffer),
@@ -201,7 +174,7 @@ impl Client {
     /// Creates standard non-TLS MQTT connection. MQTT TCP/IP port is 1883 but some brokers/application can choose to use something
     /// different. Connect needs to be called to finalize the setup and register the client-id etc.
     ///
-    fn init_common<T: AsyncReadExt+AsyncWriteExt+Send+Unpin+'static>(stream: T) -> Self {
+    fn init_common<T: AsyncReadExt + AsyncWriteExt + Send + Unpin + 'static>(stream: T) -> Self {
         let (rx_stream, tx_stream) = stream.split();
         //let rx_stream = stream;
         //let tx_stream = rx_stream.clone();
@@ -214,10 +187,14 @@ impl Client {
 
         smol::spawn(async move {
             info!("Entering receive loop");
-            mqtt.process_packets(rx_stream, r).await.map_err(|x| {
-                warn!("Exited receive loop {:?}",x);
-            }).unwrap_err();
-        }).detach();
+            mqtt.process_packets(rx_stream, r)
+                .await
+                .map_err(|x| {
+                    warn!("Exited receive loop {:?}", x);
+                })
+                .unwrap_err();
+        })
+        .detach();
 
         Self {
             pid: mqttrs::Pid::new(),
@@ -225,8 +202,10 @@ impl Client {
         }
     }
 
-    async fn send_packet<F>(&mut self, f: F) -> Result<PacketFutureResult,MqttError>
-        where F: FnOnce(mqttrs::Pid) -> Result<(ChannelPacket,packets::PacketFuture,u16), MqttError> {
+    async fn send_packet<F>(&mut self, f: F) -> Result<PacketFutureResult, MqttError>
+    where
+        F: FnOnce(mqttrs::Pid) -> Result<(ChannelPacket, packets::PacketFuture, u16), MqttError>,
+    {
         debug!("send_packet");
 
         let (msg, fut, pid) = f(self.pid)?;
@@ -238,22 +217,26 @@ impl Client {
         }
 
         // Add timeout but no retry as we assume TCP to take care of that
-        self.tx_stream.send(msg).await.map_err( |_| {
-            MqttError::AsyncChannelSendError
-        })?;
+        self.tx_stream
+            .send(msg)
+            .await
+            .map_err(|_| MqttError::AsyncChannelSendError)?;
 
-        Ok(fut.or(async {
-            Timer::after(Duration::from_secs(4)).await;
+        Ok(fut
+            .or(async {
+                Timer::after(Duration::from_secs(4)).await;
 
-            if pid > 0 {
-                self.tx_stream.send(ChannelPacket::RemovePacket(pid)).await.map_err( |_| {
-                    MqttError::AsyncChannelSendError
-                })?;
-            }
+                if pid > 0 {
+                    self.tx_stream
+                        .send(ChannelPacket::RemovePacket(pid))
+                        .await
+                        .map_err(|_| MqttError::AsyncChannelSendError)?;
+                }
 
-            error!("send_msg timeout");
-            Err(MqttError::ConnectionTimeout)
-        }).await?)
+                error!("send_msg timeout");
+                Err(MqttError::ConnectionTimeout)
+            })
+            .await?)
     }
 
     /// Connect MQTT client to the broker
@@ -261,8 +244,18 @@ impl Client {
     /// Used for sending connect request to the broker after Client has been initialized. This method can be called multiple times
     /// during the session if needed (eg. refreshing authentication parameters).
     ///
-    pub async fn connect(&mut self, keep_alive: u16, client_id: &str, username: Option<&str>, password: Option<&[u8]>, clean_session: bool) -> Result<&Self, MqttError> {
-        info!("--Connect-- client {} username: {:?} password: {:?}", client_id, username, password);
+    pub async fn connect(
+        &mut self,
+        keep_alive: u16,
+        client_id: &str,
+        username: Option<&str>,
+        password: Option<&[u8]>,
+        clean_session: bool,
+    ) -> Result<&Self, MqttError> {
+        info!(
+            "--Connect-- client {} username: {:?} password: {:?}",
+            client_id, username, password
+        );
         // Calculate the exact size 10 bytes +2 for password length for the basic header + client_id, username & password
 
         //let mut raw_buf = Vec::with_capacity(16 + client_id.len() + username.map_or(0, |s| s.len()+1) + password.map_or(0, |s| s.len()+1));
@@ -271,17 +264,19 @@ impl Client {
         self.send_packet(|_| {
             // Encode an MQTT Connect packet.
             let pkt = Connect {
-                    protocol: mqttrs::Protocol::MQTT311,
-                    keep_alive,
-                    client_id,
-                    clean_session,
-                    last_will: None,
-                    username,
-                    password,
-            }.into();
+                protocol: mqttrs::Protocol::MQTT311,
+                keep_alive,
+                client_id,
+                clean_session,
+                last_will: None,
+                username,
+                password,
+            }
+            .into();
 
             // Keeping encoding as hard error as there is nothing on runtime that can be done to fix this. This should crash and hard
-            let length = mqttrs::encode_slice(&pkt, &mut raw_buf).expect("Encoding connect packet failed");
+            let length =
+                mqttrs::encode_slice(&pkt, &mut raw_buf).expect("Encoding connect packet failed");
             let buf = BytesMut::from(&raw_buf[..length]);
 
             // Magic number for Connect request as there are no Pids for them.
@@ -290,7 +285,8 @@ impl Client {
             let channel_packet = ChannelPacket::Connect(msg, keep_alive);
 
             Ok((channel_packet, fut, 0))
-        }).await?;
+        })
+        .await?;
 
         info!("Connect done");
         Ok(self)
@@ -306,7 +302,12 @@ impl Client {
     ///
     /// let result = amqtt.publish("test/topic", Qos::AtLeastOnce, &data).await;
     /// ```
-    pub async fn publish(&mut self, topic_name: &str, qos: Qos, payload: &[u8]) -> Result<&Self, MqttError> {
+    pub async fn publish(
+        &mut self,
+        topic_name: &str,
+        qos: Qos,
+        payload: &[u8],
+    ) -> Result<&Self, MqttError> {
         info!("--Publish--");
         // Fixed header 2 bytes + variable header fixed part + 4 bytes
         //let mut raw_buf = Vec::with_capacity(topic_name.len()+payload.len()+1);
@@ -317,22 +318,24 @@ impl Client {
                 debug!("starting Qos zero publishing to {topic_name}");
                 // Encode an MQTT Connect packet.
                 let pkt = Publish {
-                        dup: false,
-                        qospid : mqttrs::QosPid::AtMostOnce,
-                        retain: false,
-                        topic_name,
-                        payload
-                }.into();
+                    dup: false,
+                    qospid: mqttrs::QosPid::AtMostOnce,
+                    retain: false,
+                    topic_name,
+                    payload,
+                }
+                .into();
 
                 let length = mqttrs::encode_slice(&pkt, &mut raw_buf)?;
                 let buf = BytesMut::from(&raw_buf[..length]);
 
                 let msg = ChannelPacket::Generic(MqttMsg::new(-1, buf));
 
-                self.tx_stream.send(msg).await.map_err( |_| {
-                    MqttError::AsyncChannelSendError
-                })?;
-            },
+                self.tx_stream
+                    .send(msg)
+                    .await
+                    .map_err(|_| MqttError::AsyncChannelSendError)?;
+            }
             Qos::AtLeastOnce | Qos::ExactlyOnce => {
                 assert!(Qos::AtLeastOnce == qos);
                 debug!("starting Qos non-zero publishing to {topic_name}");
@@ -342,11 +345,12 @@ impl Client {
 
                 let pkt = mqttrs::Publish {
                     dup: false,
-                    qospid : mqttrs::QosPid::AtLeastOnce(used_pid),
+                    qospid: mqttrs::QosPid::AtLeastOnce(used_pid),
                     retain: false,
                     topic_name,
-                    payload
-                }.into();
+                    payload,
+                }
+                .into();
 
                 let length = mqttrs::encode_slice(&pkt, &mut raw_buf)?;
                 let buf = BytesMut::from(&raw_buf[..length]);
@@ -358,37 +362,40 @@ impl Client {
                 let fut = msg.get_packet_future();
                 let channel_packet = ChannelPacket::Generic(msg);
 
-                self.tx_stream.send(channel_packet).await.map_err( |_| {
-                    MqttError::AsyncChannelSendError
-                })?;
+                self.tx_stream
+                    .send(channel_packet)
+                    .await
+                    .map_err(|_| MqttError::AsyncChannelSendError)?;
 
-                
                 fut.or(async {
                     for retry_count in 1..4 {
                         Timer::after(Duration::from_secs(1)).await;
 
-                        let pkt = mqttrs::Publish {            
+                        let pkt = mqttrs::Publish {
                             dup: true, // This is resent
-                            qospid : mqttrs::QosPid::AtLeastOnce(used_pid),
+                            qospid: mqttrs::QosPid::AtLeastOnce(used_pid),
                             retain: false,
                             topic_name,
-                            payload
-                        }.into();
+                            payload,
+                        }
+                        .into();
 
                         let length = mqttrs::encode_slice(&pkt, &mut raw_buf)?;
                         let buf = BytesMut::from(&raw_buf[..length]);
 
                         let channel_packet = ChannelPacket::Generic(MqttMsg::new(-1, buf));
-        
-                        self.tx_stream.send(channel_packet).await.map_err( |_| {
-                            MqttError::AsyncChannelSendError
-                        })?;
+
+                        self.tx_stream
+                            .send(channel_packet)
+                            .await
+                            .map_err(|_| MqttError::AsyncChannelSendError)?;
 
                         warn!("Publish timeout and retry number {retry_count}");
-                    };
+                    }
                     // All retries have been exhausted if we end up this far
                     Err(MqttError::ConnectionTimeout)
-                }).await?;
+                })
+                .await?;
             }
         }
         Ok(self)
@@ -410,9 +417,10 @@ impl Client {
         let buf = BytesMut::from(&raw_buf[..length]);
 
         let msg = ChannelPacket::Generic(MqttMsg::new(-1, buf));
-        self.tx_stream.send(msg).await.map_err( |_| {
-            MqttError::AsyncChannelSendError
-        })?;
+        self.tx_stream
+            .send(msg)
+            .await
+            .map_err(|_| MqttError::AsyncChannelSendError)?;
 
         info!("Disconnect complete");
         Ok(self)
@@ -427,12 +435,12 @@ impl Client {
         let mut raw_buf: [u8; 1024] = [0; 1024];
 
         self.send_packet(|pid| {
-
             // Encode an MQTT Connect packet.
             let pkt = mqttrs::Unsubscribe {
                 pid,
                 topics: topics.to_vec(),
-            }.into();
+            }
+            .into();
 
             let length = mqttrs::encode_slice(&pkt, &mut raw_buf)?;
             let buf = BytesMut::from(&raw_buf[..length]);
@@ -444,7 +452,8 @@ impl Client {
             let channel_packet = ChannelPacket::Generic(msg);
 
             Ok((channel_packet, fut, pid))
-        }).await?;
+        })
+        .await?;
         Ok(self)
     }
 
@@ -471,56 +480,54 @@ impl Client {
     ///     }
     /// }
     /// ```
-    pub async fn subscribe(&mut self, mqtt_topics: &Vec<(String, Qos)>) -> Result<Vec<Result<(Receiver<Vec<u8>>, Qos), MqttError>>, MqttError> {
+    pub async fn subscribe(
+        &mut self,
+        mqtt_topics: &Vec<(String, Qos)>,
+    ) -> Result<Vec<Result<(Receiver<Vec<u8>>, Qos), MqttError>>, MqttError> {
         info!("--Subscribe--");
         // Fixed header 2 bytes + variable header fixed part 3 per topic
         let mut raw_buf: [u8; 1024] = [0; 1024];
 
-        let topics: Vec<mqttrs::SubscribeTopic> = mqtt_topics.into_iter()
-                                .map(|(topic_path, qos)| {
-                                    mqttrs::SubscribeTopic {
-                                        topic_path: topic_path.to_owned(),
-                                        qos : match qos {
-                                            Qos::AtMostOnce => mqttrs::QoS::AtMostOnce,
-                                            Qos::AtLeastOnce => mqttrs::QoS::AtLeastOnce,
-                                            Qos::ExactlyOnce => mqttrs::QoS::ExactlyOnce,
-                                        },
-                                    }
-                                })
-                                .collect();
+        let topics: Vec<mqttrs::SubscribeTopic> = mqtt_topics
+            .into_iter()
+            .map(|(topic_path, qos)| mqttrs::SubscribeTopic {
+                topic_path: topic_path.to_owned(),
+                qos: match qos {
+                    Qos::AtMostOnce => mqttrs::QoS::AtMostOnce,
+                    Qos::AtLeastOnce => mqttrs::QoS::AtLeastOnce,
+                    Qos::ExactlyOnce => mqttrs::QoS::ExactlyOnce,
+                },
+            })
+            .collect();
 
-        let status = self.send_packet(|pid| {
+        let status = self
+            .send_packet(|pid| {
+                // Encode an MQTT Connect packet.
+                let pkt = Subscribe { pid, topics }.into();
 
-            // Encode an MQTT Connect packet.
-            let pkt = Subscribe {
-                    pid,
-                    topics,
-            }.into();
+                let length = mqttrs::encode_slice(&pkt, &mut raw_buf)?;
+                let buf = BytesMut::from(&raw_buf[..length]);
 
-            let length = mqttrs::encode_slice(&pkt, &mut raw_buf)?;
-            let buf = BytesMut::from(&raw_buf[..length]);
+                let pid = pid.get();
 
-            let pid = pid.get();
+                let msg = MqttMsg::new((pid as u16).into(), buf);
+                let fut = msg.get_packet_future();
+                let channel_packet = ChannelPacket::Generic(msg);
 
-            let msg = MqttMsg::new((pid as u16).into(), buf);
-            let fut = msg.get_packet_future();
-            let channel_packet = ChannelPacket::Generic(msg);
-
-            Ok((channel_packet, fut, pid))
-        }).await?;
+                Ok((channel_packet, fut, pid))
+            })
+            .await?;
 
         // We need to use the inner as the outer is async
         info!("End of subscribe");
 
         if let PacketFutureResult::Subscriptions(subs) = status {
             Ok(subs)
-        }
-        else {
+        } else {
             panic!("We should never be here");
         }
     }
 }
-
 
 struct Mqtt<T> {
     packets: HashMap<u16, MqttMsg>,
@@ -533,11 +540,11 @@ struct Mqtt<T> {
 impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
     fn new(stream: T) -> Self {
         Self {
-            packets : HashMap::with_capacity(8),
-            subscriptions : HashMap::with_capacity(8),
-            tx_stream : stream,
+            packets: HashMap::with_capacity(8),
+            subscriptions: HashMap::with_capacity(8),
+            tx_stream: stream,
             keep_alive: u16::MAX,
-            ongoing_ping_reg: false
+            ongoing_ping_reg: false,
         }
     }
 
@@ -547,9 +554,11 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
         if let Some(msg) = msg_opt {
             //TODO: Cascade potential error value. Now everything always work.
             msg.req_future.complete_ok();
-        }
-        else {
-            error!("complete_packet error: Didn't find expected Pid:{pid}. Available Pids:{:?}", self.packets.keys());
+        } else {
+            error!(
+                "complete_packet error: Didn't find expected Pid:{pid}. Available Pids:{:?}",
+                self.packets.keys()
+            );
         }
         debug!("Exit complete_packet");
     }
@@ -569,7 +578,8 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
                 let meta = subs_packet.topics;
                 assert!(meta.len() == suback.return_codes.len());
 
-                let mut subscription_results = Vec::<Result<(Receiver<Vec<u8>>, Qos), MqttError>>::with_capacity(meta.len());
+                let mut subscription_results =
+                    Vec::<Result<(Receiver<Vec<u8>>, Qos), MqttError>>::with_capacity(meta.len());
 
                 for (subs, result) in meta.iter().zip(suback.return_codes.iter()) {
                     subscription_results.push(
@@ -590,21 +600,19 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
 
                             self.subscriptions.insert(subs.topic_path.to_owned(), s);
                             Ok((r, result_qos))
-                        }
-                        else {
+                        } else {
                             Err(MqttError::SubscribeError)
-                        }
+                        },
                     )
                 }
-                msg.req_future.complete(Ok(PacketFutureResult::Subscriptions(subscription_results)));
-            }
-            else {
+                msg.req_future
+                    .complete(Ok(PacketFutureResult::Subscriptions(subscription_results)));
+            } else {
                 // This should never be possible to happen but implemented to keep Rust happy
                 // there is probably a more clever way to do this.
                 panic!("Non-subscribe meta-data found. This is not possible");
             }
-        }
-        else {
+        } else {
             error!("complete_subscription error: Didn't find expected Pid: {pid}");
         }
     }
@@ -626,7 +634,7 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
                 debug!("Keep-alive set to {}s", keep_alive);
                 self.keep_alive = keep_alive;
                 msg
-            },
+            }
             ChannelPacket::RemovePacket(pid) => {
                 self.packets.remove(&pid);
                 return Ok(());
@@ -652,15 +660,15 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
             Packet::Connack(_c) => {
                 warn!("Connect ack received");
                 self.complete_packet(&0);
-            },
+            }
             Packet::Pingresp => {
                 info!("Ping received");
                 self.ongoing_ping_reg = false;
-            },
+            }
             Packet::Suback(suback) => {
                 self.complete_subscription(suback);
-            },
-            Packet::Puback(pid) | mqttrs::Packet::Unsuback(pid)=> self.complete_packet(&pid.get()),
+            }
+            Packet::Puback(pid) | mqttrs::Packet::Unsuback(pid) => self.complete_packet(&pid.get()),
             Packet::Publish(publish) => {
                 info!("Received packet");
                 let qos_pid = publish.qospid;
@@ -673,8 +681,7 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
                         let pkt = Packet::Puback(pid);
                         let length = mqttrs::encode_slice(&pkt, &mut buf)?;
                         self.tx_stream.write_all(&buf[..length]).await?;
-                    }
-                    else {
+                    } else {
                         panic!("Not supporting ExactlyOnce yet");
                     }
                 }
@@ -684,13 +691,16 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
 
                 if let Some(channel) = topic_channel {
                     if let Err(err) = channel.send(publish.payload.to_vec()).await {
-                        warn!("Error message {:?}. Client has closed the handle for topic: {:?}", err, publish.topic_name);
+                        warn!(
+                            "Error message {:?}. Client has closed the handle for topic: {:?}",
+                            err, publish.topic_name
+                        );
                         self.subscriptions.remove(&topic);
                     }
                 } else {
                     warn!("Didn't find topic {:?} from hashtable", publish.topic_name);
                 }
-            },
+            }
             _ => warn!("Other packet received"),
         }
         Ok(())
@@ -701,8 +711,7 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
             self.ongoing_ping_reg = true;
             self.send_ping().await?;
             return Ok(());
-        }
-        else {
+        } else {
             error!("Ping failed");
             return Err(MqttError::PingRespTimeout);
         }
@@ -713,7 +722,7 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
         let mut adjusted = 2; // In minimum two bytes are not part of the length
         let mut byte = 0x80; // If this doesn't get changed, then we know we are in trouble
 
-        let end = std::cmp::min(4, data.len()-1);
+        let end = std::cmp::min(4, data.len() - 1);
 
         for b in &data[1..end] {
             byte = *b;
@@ -722,8 +731,7 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
                 // We are making room for upcoming byte
                 length <<= 7;
                 adjusted += 1;
-            }
-            else {
+            } else {
                 break;
             }
         }
@@ -732,15 +740,18 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
         // sign we need more data.
         if byte & 0x80 > 0 {
             Err(MqttError::ReceptionIncomplete)
-        }
-        else {
+        } else {
             // We can only calculate fields after
             // header bytes and length field(s)
             Ok(length + adjusted)
         }
     }
 
-    async fn process_packets<R: AsyncReadExt + Unpin>(&mut self, stream: R, msg_receiver: Receiver<ChannelPacket>) -> Result<(), MqttError> {
+    async fn process_packets<R: AsyncReadExt + Unpin>(
+        &mut self,
+        stream: R,
+        msg_receiver: Receiver<ChannelPacket>,
+    ) -> Result<(), MqttError> {
         debug!("fn process_packet");
         let mut stream = stream;
 
@@ -753,53 +764,54 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
         loop {
             // Waiting for the event and acting on it must be separated due to borrow-checker as the operations
             // are mutable while the listing of the invent isn't.
-            let status = (
-                async {
-                    let stream_result = stream.read(&mut buf[stop..]).await.map_err(|op| {
-                        error!("Data receive error {:?}", op);
-                        MqttError::from(op)
-                    });
-                    debug!("Data received");
-                    match stream_result {
-                        Ok(n) => {
-                            if n > 0 {
-                                ProcessLoop::DataReceived(n)
-                            }
-                            else {
-                                ProcessLoop::Error(MqttError::Disconnected)
-                            }
-                        },
-                        Err(err) => ProcessLoop::Error(err)
+            let status = (async {
+                let stream_result = stream.read(&mut buf[stop..]).await.map_err(|op| {
+                    error!("Data receive error {:?}", op);
+                    MqttError::from(op)
+                });
+                debug!("Data received");
+                match stream_result {
+                    Ok(n) => {
+                        if n > 0 {
+                            ProcessLoop::DataReceived(n)
+                        } else {
+                            ProcessLoop::Error(MqttError::Disconnected)
+                        }
                     }
+                    Err(err) => ProcessLoop::Error(err),
                 }
-            ).or(
-                async {
-                    let stream_result = msg_receiver.recv().await.map_err(|op| {
-                        error!("Channel error {:?}", op);
-                        MqttError::from(op)
-                    });
-                    debug!("Channel packet received");
-                    match stream_result {
-                        Ok(msg) => ProcessLoop::ChannelPacket(msg),
-                        Err(err) => ProcessLoop::Error(err)
-                    }
+            })
+            .or(async {
+                let stream_result = msg_receiver.recv().await.map_err(|op| {
+                    error!("Channel error {:?}", op);
+                    MqttError::from(op)
+                });
+                debug!("Channel packet received");
+                match stream_result {
+                    Ok(msg) => ProcessLoop::ChannelPacket(msg),
+                    Err(err) => ProcessLoop::Error(err),
                 }
-            ).or(
-                async {
-                    Timer::after(Duration::from_secs(self.keep_alive as u64)).await;
-                    debug!("Keep-alive timeout {}s", self.keep_alive);
-                    ProcessLoop::Timeout
-                }
-            ).await;
+            })
+            .or(async {
+                Timer::after(Duration::from_secs(self.keep_alive as u64)).await;
+                debug!("Keep-alive timeout {}s", self.keep_alive);
+                ProcessLoop::Timeout
+            })
+            .await;
 
             match status {
                 ProcessLoop::DataReceived(n) => {
                     stop += n;
                     loop {
-                        if let Ok(single_packet_length) = Mqtt::<T>::packet_length(&buf[start..stop]) {
+                        if let Ok(single_packet_length) =
+                            Mqtt::<T>::packet_length(&buf[start..stop])
+                        {
                             // Only for debugging
                             if single_packet_length != n {
-                                warn!("Lengths differ n:{} packet_length {}", n, single_packet_length);
+                                warn!(
+                                    "Lengths differ n:{} packet_length {}",
+                                    n, single_packet_length
+                                );
                             }
 
                             let result = mqttrs::decode_slice(&buf[start..stop])?;
@@ -814,34 +826,33 @@ impl<T: AsyncWriteExt + marker::Unpin> Mqtt<T> {
                                 if start == stop {
                                     start = 0;
                                     stop = 0;
-                                }
-                                else {
+                                } else {
                                     continue;
                                 }
-                            }
-                            else {
+                            } else {
                                 warn!("Received {:?} bytes data but didn't manage to decode full package", n);
                             }
-                        }
-                        else {
-                            warn!("Received {:?} bytes that is too little data to decode the package", n);
+                        } else {
+                            warn!(
+                                "Received {:?} bytes that is too little data to decode the package",
+                                n
+                            );
                         }
                         break; // All error cases end up here
                     }
-                },
-                ProcessLoop::ChannelPacket(msg) =>  self.write_packet(msg).await?,
+                }
+                ProcessLoop::ChannelPacket(msg) => self.write_packet(msg).await?,
                 ProcessLoop::Timeout => {
                     if self.manage_timeout().await.is_err() == true {
                         warn!("PingResp timeout");
                         return Err(MqttError::PingRespTimeout);
                     }
-                },
+                }
                 ProcessLoop::Error(error) => return Err(error),
             }
         }
     }
 }
-
 
 /// Builder MQTT Client
 ///
@@ -893,7 +904,6 @@ impl MqttInit {
         Ok(Client::init_common(stream))
     }
 
-
     /// Sets MQTT to use TLS
     pub async fn with_tls(self, root_cert: &[u8]) -> Result<Client, MqttError> {
         info!("init_tls");
@@ -917,94 +927,105 @@ impl MqttInit {
         //let stream = net::TcpStream::connect(format!("{}:{}", addr, self.port)).await?;
         let stream = net::TcpStream::connect(&addr).await?;
 
-        let stream = TlsConnector::from(Arc::new(client_config)).connect(domain, stream).await?;
+        let stream = TlsConnector::from(Arc::new(client_config))
+            .connect(domain, stream)
+            .await?;
 
         debug!("TLS stream crated");
         Ok(Client::init_common(stream))
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        fs::File,
-        io::Read,
-        path::Path,
-        env
-    };
     use env_logger;
     use smol::block_on;
+    use std::{env, fs::File, io::Read, path::Path};
 
     fn init() {
         let _ = env_logger::builder().is_test(true).try_init();
     }
 
     fn test_connection(address: &str, client_id: &str, cert: Option<&[u8]>) {
-        block_on(
-            async {
-                let mut mqtt_init = MqttInit {
-                    address: address.to_string(),
-                    ..Default::default()
-                };
+        block_on(async {
+            let mut mqtt_init = MqttInit {
+                address: address.to_string(),
+                ..Default::default()
+            };
 
-                let mut amqtt = if let Some(c) = cert {
-                    mqtt_init.port = 8883;
-                    //mqtt_init.set_certificate(c).expect("Setting certificate failed");
-                    mqtt_init.with_tls(c).await.unwrap()
-                }
-                else {
-                    mqtt_init.init().await.unwrap()
-                };
+            let mut amqtt = if let Some(c) = cert {
+                mqtt_init.port = 8883;
+                //mqtt_init.set_certificate(c).expect("Setting certificate failed");
+                mqtt_init.with_tls(c).await.unwrap()
+            } else {
+                mqtt_init.init().await.unwrap()
+            };
 
-                debug!("Init done");
-                amqtt.connect(30, client_id, None, None, true).await.expect("Connect failed");
+            debug!("Init done");
+            amqtt
+                .connect(30, client_id, None, None, true)
+                .await
+                .expect("Connect failed");
 
-                debug!("Connect done");
+            debug!("Connect done");
 
-                let test_subscription = vec![("test/topic".to_string(), Qos::AtLeastOnce),("test/topic1".to_string(), Qos::AtMostOnce)];
+            let test_subscription = vec![
+                ("test/topic".to_string(), Qos::AtLeastOnce),
+                ("test/topic1".to_string(), Qos::AtMostOnce),
+            ];
 
-                let subs_result = amqtt.subscribe(&test_subscription).await;
+            let subs_result = amqtt.subscribe(&test_subscription).await;
 
-                if let Ok(subs) = &subs_result {
-                    for (i, individual_sub_result) in subs.iter().enumerate() {
-                        match individual_sub_result {
-                            Ok((_, qos)) => info!("Subscription for {} succeeded with Qos {:?}", test_subscription[i].0, qos),
-                            Err(err) => panic!("MQTT error {:?}", err)
-                        }
+            if let Ok(subs) = &subs_result {
+                for (i, individual_sub_result) in subs.iter().enumerate() {
+                    match individual_sub_result {
+                        Ok((_, qos)) => info!(
+                            "Subscription for {} succeeded with Qos {:?}",
+                            test_subscription[i].0, qos
+                        ),
+                        Err(err) => panic!("MQTT error {:?}", err),
                     }
                 }
-
-                let subs = subs_result.unwrap();
-
-                smol::spawn(async move {
-                    info!("Entering receive loop");
-                    let (channel, _) = subs[0].as_ref().unwrap();
-                    loop {
-                        let rmessage = channel.recv().await;
-                        match rmessage {
-                            Ok(message) => info!("Message received:{:?}", String::from_utf8_lossy(&*message) ),
-                            Err(err) => {
-                                warn!("test: Receive loop ended with code {:?}", err);
-                                break;
-                            }
-                        }
-                    }
-                }).detach();
-
-                let data = vec![1,2,3,4,5,6,7,8,9,10];
-
-                amqtt.publish("test/topic", Qos::AtMostOnce, &data).await.expect("Qos zero publish failed");
-                debug!("First publish done");
-
-                info!("Test:Loop up");
-
-                amqtt.publish("test/topic", Qos::AtLeastOnce, &data).await.expect("Qos one publish failed");
-
-                amqtt.disconnect().await.expect("Disconnect failed");
             }
-        );
+
+            let subs = subs_result.unwrap();
+
+            smol::spawn(async move {
+                info!("Entering receive loop");
+                let (channel, _) = subs[0].as_ref().unwrap();
+                loop {
+                    let rmessage = channel.recv().await;
+                    match rmessage {
+                        Ok(message) => {
+                            info!("Message received:{:?}", String::from_utf8_lossy(&*message))
+                        }
+                        Err(err) => {
+                            warn!("test: Receive loop ended with code {:?}", err);
+                            break;
+                        }
+                    }
+                }
+            })
+            .detach();
+
+            let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+
+            amqtt
+                .publish("test/topic", Qos::AtMostOnce, &data)
+                .await
+                .expect("Qos zero publish failed");
+            debug!("First publish done");
+
+            info!("Test:Loop up");
+
+            amqtt
+                .publish("test/topic", Qos::AtLeastOnce, &data)
+                .await
+                .expect("Qos one publish failed");
+
+            amqtt.disconnect().await.expect("Disconnect failed");
+        });
     }
 
     #[test]
@@ -1019,7 +1040,8 @@ mod tests {
     fn test_secure_connection() {
         init();
 
-        let root_path = env::var("MOSQUITTO_CERT").expect("Couldn't find the environment variable MOSQUITTO_CERT");
+        let root_path = env::var("MOSQUITTO_CERT")
+            .expect("Couldn't find the environment variable MOSQUITTO_CERT");
         let root_path = Path::new(&root_path);
 
         let mut f = File::open(root_path).expect("Couldn't find the certificate from defined path");
@@ -1037,5 +1059,4 @@ mod tests {
 
         test_connection("test.mosquitto.org", "amqtt_test2", Some(&ca_cert[..]));
     }
-
 }

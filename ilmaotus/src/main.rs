@@ -2,59 +2,48 @@
 use std::{
     env,
     path::Path,
-    time::{
-        Duration,
-        SystemTime,
-        Instant
-    },
     str::from_utf8,
+    time::{Duration, Instant, SystemTime},
 };
 
-use env_logger;
-use log::{info, warn, error};
 use anyhow::Context;
+use env_logger;
+use log::{error, info, warn};
 
 use jsonwebtoken::Algorithm;
 
-use smol::{
-    Timer,
-    fs,
-    future::FutureExt
-};
+use smol::{fs, future::FutureExt, Timer};
 
-use protobuf::{
-    Clear,
-    Message
-};
+use protobuf::{Clear, Message};
 
 use amqtt::{
-    mqtt::Qos,
     gcp_mqtt::{
-        GcpMqtt,
         //GcpIoTError,
-        ChannelData
-    }
+        ChannelData,
+        GcpMqtt,
+    },
+    mqtt::Qos,
 };
 
 use messages::{
-    EnvironmentDataBlocks,
     EnvironmentData,
     //Configuration
+    EnvironmentDataBlocks,
 };
 
-mod sensor;
 mod messages;
+mod sensor;
 
 const CONNECTION_RENEWAL_PERIOD: u32 = 1200;
-const KEEP_ALIVE_PERIOD:u16 = 30*60;
+const KEEP_ALIVE_PERIOD: u16 = 30 * 60;
 
 async fn start_cloud() -> GcpMqtt {
-    let path        = env::var("CERT").expect("No private cert environment variable");
-    let project_id  = env::var("PROJECT_ID").unwrap();
+    let path = env::var("CERT").expect("No private cert environment variable");
+    let project_id = env::var("PROJECT_ID").unwrap();
     let cloud_region = env::var("REGION").unwrap();
-    let registry_id  = env::var("REGISTRY_ID").unwrap();
-    let device_id   = env::var("DEVICE_ID").unwrap();
-    let root_path   = env::var("GOOGLE_ROOT_CERT").expect("Google root cert not found");
+    let registry_id = env::var("REGISTRY_ID").unwrap();
+    let device_id = env::var("DEVICE_ID").unwrap();
+    let root_path = env::var("GOOGLE_ROOT_CERT").expect("Google root cert not found");
 
     let path = Path::new(&path);
 
@@ -73,8 +62,11 @@ async fn start_cloud() -> GcpMqtt {
         device_id,
         KEEP_ALIVE_PERIOD,
         user_cert,
-        &ca_cert
-    ).await.with_context(|| "Failed to create GCP MQTT").unwrap()
+        &ca_cert,
+    )
+    .await
+    .with_context(|| "Failed to create GCP MQTT")
+    .unwrap()
 }
 
 async fn sample(sensor: &mut Box<dyn sensor::Sensor>) -> EnvironmentData {
@@ -88,9 +80,10 @@ async fn sample(sensor: &mut Box<dyn sensor::Sensor>) -> EnvironmentData {
     // California time. Don't get about the universal time as the temperature has local context
     // Seemed to be major hassle to get timestamp adjusted to the local timezone.
     measurement.time = (SystemTime::now()
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs() - 8*60*60) as u32;
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 8 * 60 * 60) as u32;
     measurement.temperature_k = (sample.temperature + 27215) as u32;
     measurement.humidity_rh = sample.relative_humidity as u32;
     measurement.voc_index = (sample.voc / 2) as u32;
@@ -99,43 +92,64 @@ async fn sample(sensor: &mut Box<dyn sensor::Sensor>) -> EnvironmentData {
 
 struct Connection {
     mqtt: GcpMqtt,
-    connection_creation: Instant
+    connection_creation: Instant,
 }
 
 impl Connection {
     async fn new() -> Self {
         Self {
             mqtt: start_cloud().await,
-            connection_creation: Instant::now()
+            connection_creation: Instant::now(),
         }
     }
 
     async fn renew_connection_if_needed(mut self) -> Self {
         // If we have passed the new time, then this turns in positive number
         // and we need to renew the connection
-        if self.connection_creation.elapsed() > Duration::from_secs((CONNECTION_RENEWAL_PERIOD - 700) as u64) {
+        if self.connection_creation.elapsed()
+            > Duration::from_secs((CONNECTION_RENEWAL_PERIOD - 700) as u64)
+        {
             warn!("Connection is renewed");
-            self.mqtt.set_device_state(&"down".to_owned()).await.unwrap();
+            self.mqtt
+                .set_device_state(&"down".to_owned())
+                .await
+                .unwrap();
             self.mqtt.disconnect().await.unwrap();
+
+            // Little pause to give the system time to clean things up
+            Timer::after(Duration::from_millis(500)).await;
 
             // Now we are ready to start the new connection
             let mut gcp_mqtt = Self::new().await;
-            gcp_mqtt.mqtt.set_device_state(&"up".to_owned()).await.unwrap();
+
+            // Need another pause to ensure that 1s update limit is not exceeded as Google IoT
+            // would kick us out if it does.
+            Timer::after(Duration::from_millis(500)).await;
             gcp_mqtt
-        }
-        else {
+                .mqtt
+                .set_device_state(&"up".to_owned())
+                .await
+                .unwrap();
+            gcp_mqtt
+        } else {
             self
         }
     }
 }
 
-
 fn main() {
     env_logger::init();
-    let n_samples_per_packet = env::var("N_SAMPLES").and_then(|x| Ok(x.parse::<usize>().unwrap())).unwrap_or(10);
-    let sample_interval = env::var("SAMPLE_INTERVAL").and_then(|x| Ok(x.parse::<usize>().unwrap())).unwrap_or(3);
+    let n_samples_per_packet = env::var("N_SAMPLES")
+        .and_then(|x| Ok(x.parse::<usize>().unwrap()))
+        .unwrap_or(10);
+    let sample_interval = env::var("SAMPLE_INTERVAL")
+        .and_then(|x| Ok(x.parse::<usize>().unwrap()))
+        .unwrap_or(3);
 
-    info!("Starting IoT node with {} samples per packet and {} sample interval", n_samples_per_packet, sample_interval);
+    info!(
+        "Starting IoT node with {} samples per packet and {} sample interval",
+        n_samples_per_packet, sample_interval
+    );
 
     let mut sensor = sensor::new("/dev/i2c-1").unwrap();
 
@@ -153,10 +167,13 @@ fn main() {
             let gcp_mqtt = &mut connection.mqtt;
 
             for _ in 1_usize..n_samples_per_packet {
-                let packet_result = gcp_mqtt.wait_channels().or(async {
-                    Timer::after(Duration::from_secs(sample_interval as u64)).await;
-                    Ok(ChannelData::Timeout)
-                }).await;
+                let packet_result = gcp_mqtt
+                    .wait_channels()
+                    .or(async {
+                        Timer::after(Duration::from_secs(sample_interval as u64)).await;
+                        Ok(ChannelData::Timeout)
+                    })
+                    .await;
 
                 // We don't care right now about the fact that receiving commands or configurations
                 // messes the exact interval. We always wait 30 seconds no matter what as both
@@ -165,14 +182,14 @@ fn main() {
                     Ok(ChannelData::Config(packet)) => {
                         // This is text of base64 so it is save to cast this to string
                         info!("Config packet {:?}", from_utf8(&packet).unwrap());
-                    },
+                    }
                     Ok(ChannelData::Command(packet)) => {
                         info!("Command packet {:?}", packet);
-                    },
+                    }
                     Ok(ChannelData::Timeout) => {
                         let sample = sample(&mut sensor).await;
                         measurements.blocks.push(sample);
-                    },
+                    }
                     Err(_) => {
                         error!("Unspecified loop termination");
                         break;
@@ -181,10 +198,12 @@ fn main() {
             }
             let data = measurements.write_to_bytes().unwrap();
 
-            gcp_mqtt.publish("data", Qos::AtLeastOnce, &data).await.unwrap();
+            gcp_mqtt
+                .publish("data", Qos::AtLeastOnce, &data)
+                .await
+                .unwrap();
 
             measurements.clear();
         }
     })
-
 }

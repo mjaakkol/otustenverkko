@@ -1,37 +1,15 @@
+use crate::mqtt::{Client, MqttError, MqttInit, Qos};
+use chrono::{self, Utc};
+use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use log::{debug, error, info, warn};
 use serde;
-use crate::mqtt::{
-    MqttError,
-    Client,
-    Qos,
-    MqttInit
-};
-use std::{
-    time::Duration,
-    fmt::Display
-};
+use serde::{Deserialize, Serialize};
 use smol::{
-    channel::{
-        Receiver,
-        RecvError
-    },
-    future::FutureExt
+    channel::{Receiver, RecvError},
+    future::FutureExt,
 };
-use chrono::{
-    self,
-    Utc
-};
-use jsonwebtoken::{
-    EncodingKey,
-    Header,
-    encode,
-    Algorithm
-};
-use serde::{
-    Serialize,
-    Deserialize
-};
+use std::{fmt::Display, time::Duration};
 use thiserror::Error;
-use log::{debug, info, warn, error};
 //use backoff::{future::FutureOperation as _, ExponentialBackoff};
 use backoff::future::retry;
 use backoff::ExponentialBackoff;
@@ -61,7 +39,7 @@ pub enum GcpIoTError {
     #[error("jsonwebtoken error")]
     JsonWebTokenError {
         /// Cascaded error
-        source: jsonwebtoken::errors::Error
+        source: jsonwebtoken::errors::Error,
     },
 
     /// Derived IOError
@@ -81,7 +59,7 @@ pub enum GcpIoTError {
 struct Claims {
     iat: i64,
     exp: i64,
-    aud: String
+    aud: String,
 }
 
 /// Connects the device to Google cloud IoT framework
@@ -95,7 +73,7 @@ async fn connect(
     expiration: &Duration,
     keep_alive: u16,
     key: &EncodingKey,
-    ca_cert: &[u8]
+    ca_cert: &[u8],
 ) -> Result<Client, GcpIoTError> {
     let jwt_password = GcpMqtt::create_token(key, project_id, algorithm, expiration)?;
 
@@ -108,9 +86,19 @@ async fn connect(
             ..Default::default()
         };
 
-        let mut client = mqtt_init.with_tls(ca_cert).await.map_err(GcpMqtt::err_mapper)?;
+        let mut client = mqtt_init
+            .with_tls(ca_cert)
+            .await
+            .map_err(GcpMqtt::err_mapper)?;
 
-        client.connect(keep_alive, &client_id, Some("unused"), Some(&jwt_password[..]), false)
+        client
+            .connect(
+                keep_alive,
+                &client_id,
+                Some("unused"),
+                Some(&jwt_password[..]),
+                false,
+            )
             .await
             .map_err(GcpMqtt::err_mapper)?;
         Ok(client)
@@ -120,7 +108,6 @@ async fn connect(
     Ok(client)
 }
 
-
 /// Google cloud MQTT client
 ///
 /// Client for engaging with Google IoT hub.
@@ -129,7 +116,7 @@ pub struct GcpMqtt {
     /// Algorithm for generating token for web token
     algorithm: Algorithm,
     /// Token expiration period. Expiration will cause reauthentiction. This value cannot exceed
-    /// 24h - skew (10min). 
+    /// 24h - skew (10min).
     expiration: Duration,
     /// Google Core IoT project name
     project_id: String,
@@ -145,8 +132,8 @@ pub struct GcpMqtt {
     command: Receiver<Vec<u8>>,
     client: Client,
     key: EncodingKey,
-    keep_alive:u16,
-    topic_prefix: String
+    keep_alive: u16,
+    topic_prefix: String,
 }
 
 type RxChannel = Receiver<Vec<u8>>;
@@ -180,25 +167,39 @@ impl GcpMqtt {
         device_id: String,
         keep_alive: u16,
         cert: Vec<u8>,
-        ca_cert: &[u8]
+        ca_cert: &[u8],
     ) -> Result<Self, GcpIoTError> {
-        let key = EncodingKey::from_ec_pem(&cert).map_err(|source| GcpIoTError::JsonWebTokenError { source })?;
+        let key = EncodingKey::from_ec_pem(&cert)
+            .map_err(|source| GcpIoTError::JsonWebTokenError { source })?;
 
         // Creating the standard topics to Gcp MQTT. Client topics are added separately
         let topic_prefix = format!("/devices/{}/", device_id);
 
         let gcp_subscription = vec![
-            (topic_prefix.to_owned()+"config", Qos::AtLeastOnce),
-            (topic_prefix.to_owned()+"commands/#", Qos::AtLeastOnce)
-            ];
+            (topic_prefix.to_owned() + "config", Qos::AtLeastOnce),
+            (topic_prefix.to_owned() + "commands/#", Qos::AtLeastOnce),
+        ];
 
+        let client_id = format!(
+            "projects/{}/locations/{}/registries/{}/devices/{}",
+            project_id, cloud_region, registry, device_id
+        );
 
-        let client_id = format!("projects/{}/locations/{}/registries/{}/devices/{}", project_id, cloud_region, registry, device_id);
+        info!(
+            "Project ID:{} Region:{} Registry:{} Device ID:{}, token expiration:{:?} Keep-alive:{}",
+            project_id, cloud_region, registry, device_id, expiration, keep_alive
+        );
 
-        info!("Project ID:{} Region:{} Registry:{} Device ID:{}, token expiration:{:?} Keep-alive:{}", 
-            project_id, cloud_region, registry, device_id, expiration, keep_alive);
-
-        let mut client = connect(&client_id, &project_id, &algorithm, &expiration, keep_alive, &key, ca_cert).await?;
+        let mut client = connect(
+            &client_id,
+            &project_id,
+            &algorithm,
+            &expiration,
+            keep_alive,
+            &key,
+            ca_cert,
+        )
+        .await?;
 
         debug!("MQTTInit done");
         let mut subs = client.subscribe(&gcp_subscription).await?;
@@ -215,28 +216,36 @@ impl GcpMqtt {
             device_id,
             client_id,
             cert,
-            ca_cert : ca_cert.to_vec(),
+            ca_cert: ca_cert.to_vec(),
             config,
             command,
             client,
             key,
             keep_alive,
-            topic_prefix
+            topic_prefix,
         })
     }
 
-    fn create_token(key: &EncodingKey, project_id: &str, algorithm: &Algorithm, expiration: &Duration) -> Result<Vec<u8>, GcpIoTError> {
+    fn create_token(
+        key: &EncodingKey,
+        project_id: &str,
+        algorithm: &Algorithm,
+        expiration: &Duration,
+    ) -> Result<Vec<u8>, GcpIoTError> {
         // Time expiration is so small that failure should equal assert (major programming error) and things should explode
         let base_time = Utc::now();
         let duration = chrono::Duration::from_std(*expiration).unwrap();
         let expiration = base_time.checked_add_signed(duration).unwrap();
 
-        debug!("JWT. Basetime: {} expiration: {} Project id:{:?}", base_time, expiration, project_id);
+        debug!(
+            "JWT. Basetime: {} expiration: {} Project id:{:?}",
+            base_time, expiration, project_id
+        );
 
         let claims = Claims {
             iat: base_time.timestamp(),
             exp: expiration.timestamp(),
-            aud: project_id.to_owned()
+            aud: project_id.to_owned(),
         };
 
         Ok(encode(&Header::new(*algorithm), &claims, key)
@@ -278,14 +287,16 @@ impl GcpMqtt {
     ///        }
     ///    }
     /// ```
-    pub async fn wait_channels(&self) -> Result<ChannelData, GcpIoTError>  {
-        let packet: Result<ChannelData, GcpIoTError> = ( async {
-                let config_data = self.config.recv().await?;
-                Ok(ChannelData::Config(config_data))
-            }).or( async {
-                let command_data = self.command.recv().await?;
-                Ok(ChannelData::Command(command_data))
-        }).await;
+    pub async fn wait_channels(&self) -> Result<ChannelData, GcpIoTError> {
+        let packet: Result<ChannelData, GcpIoTError> = (async {
+            let config_data = self.config.recv().await?;
+            Ok(ChannelData::Config(config_data))
+        })
+        .or(async {
+            let command_data = self.command.recv().await?;
+            Ok(ChannelData::Command(command_data))
+        })
+        .await;
         packet
     }
 
@@ -296,10 +307,11 @@ impl GcpMqtt {
     ///
     pub async fn set_device_state(&mut self, state: &String) -> Result<&mut Self, GcpIoTError> {
         let topic = self.topic_prefix.to_owned() + "state";
-        self.client.publish(&topic, Qos::AtLeastOnce, &state.as_bytes().to_vec()).await?;
+        self.client
+            .publish(&topic, Qos::AtLeastOnce, &state.as_bytes().to_vec())
+            .await?;
         Ok(self)
     }
-
 
     /// Subscribe to a set of topics.
     ///
@@ -311,12 +323,14 @@ impl GcpMqtt {
     ///
     /// The returned Receivers channels are used to communicate packets to given topic and they match the order in which the topics were supplied.
     ///
-    pub async fn subscribe(&mut self, mqtt_topics: &Vec<(String, Qos)>) -> Result<Vec<Result<(Receiver<Vec<u8>>, Qos), MqttError>>, GcpIoTError> {
+    pub async fn subscribe(
+        &mut self,
+        mqtt_topics: &Vec<(String, Qos)>,
+    ) -> Result<Vec<Result<(Receiver<Vec<u8>>, Qos), MqttError>>, GcpIoTError> {
         // Add the topic management
-        let topics: Vec<(String, Qos)> = mqtt_topics.iter()
-            .map(|(topic, qos)| {
-                ((self.topic_prefix.to_owned() + topic), qos.clone())
-            })
+        let topics: Vec<(String, Qos)> = mqtt_topics
+            .iter()
+            .map(|(topic, qos)| ((self.topic_prefix.to_owned() + topic), qos.clone()))
             .collect();
 
         info!("Subscribing into {:?}", topics);
@@ -357,8 +371,12 @@ impl GcpMqtt {
     ///
     /// TODO Create example
     ///
-    pub async fn publish(&mut self, topic: &str, qos: Qos, data: &Vec<u8>) -> Result<&Self, GcpIoTError> {
-
+    pub async fn publish(
+        &mut self,
+        topic: &str,
+        qos: Qos,
+        data: &Vec<u8>,
+    ) -> Result<&Self, GcpIoTError> {
         //let full_topic = self.topic_prefix.to_owned() + format!("events/{}", topic);
         let full_topic = format!("{}events/{}", self.topic_prefix, topic);
         self.client.publish(&full_topic, qos, data).await?;
@@ -366,23 +384,15 @@ impl GcpMqtt {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use env_logger;
-    use std::{
-        fs::File,
-        io::Read,
-        time::Duration,
-        env,
-        path::Path,
-        str::from_utf8
-    };
-    use jsonwebtoken::{Algorithm,DecodingKey, decode,Validation};
-    use smol::{Timer, block_on, spawn};
-    use log::{info, warn};
     use futures_lite::future::FutureExt;
+    use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+    use log::{info, warn};
+    use smol::{block_on, spawn, Timer};
+    use std::{env, fs::File, io::Read, path::Path, str::from_utf8, time::Duration};
 
     fn init() {
         let _ = env_logger::builder().is_test(true).try_init();
@@ -414,7 +424,7 @@ mod tests {
 
         let project_id = env::var("PROJECT_ID").unwrap();
         let cloud_region = env::var("REGION").unwrap();
-        let registry_id  = env::var("REGISTRY_ID").unwrap();
+        let registry_id = env::var("REGISTRY_ID").unwrap();
         let device_id = env::var("DEVICE_ID").unwrap();
 
         block_on(async move {
@@ -427,41 +437,51 @@ mod tests {
                 device_id,
                 30,
                 user_cert,
-                &ca_cert
-            ).await.unwrap();
+                &ca_cert,
+            )
+            .await
+            .unwrap();
 
-            spawn( async move {
+            spawn(async move {
                 let timeout = 3;
                 loop {
-                    let packet_result = gcp_mqtt.wait_channels().or(async {
-                        Timer::after(Duration::from_secs(timeout)).await;
-                        Ok(ChannelData::Timeout)
-                    }).await;
+                    let packet_result = gcp_mqtt
+                        .wait_channels()
+                        .or(async {
+                            Timer::after(Duration::from_secs(timeout)).await;
+                            Ok(ChannelData::Timeout)
+                        })
+                        .await;
 
                     match packet_result {
                         Ok(ChannelData::Config(packet)) => {
                             // This is text of base64 so it is save to cast this to string
                             info!("Config packet {:?}", from_utf8(&packet).unwrap());
-                        },
+                        }
                         Ok(ChannelData::Command(packet)) => {
                             info!("Command packet {:?}", packet);
-                        },
+                        }
                         Ok(ChannelData::Timeout) => {
                             info!("Sending state information");
-                            gcp_mqtt.set_device_state(&String::from("state")).await.unwrap();
+                            gcp_mqtt
+                                .set_device_state(&String::from("state"))
+                                .await
+                                .unwrap();
                             Timer::after(Duration::from_secs(1)).await;
                             gcp_mqtt.connect().await.expect("Re-connect failed!");
                             info!("Reconnect succeeded");
-                        },
+                        }
                         Err(_) => {
                             warn!("Test receive loop terminated");
                             break;
                         }
                     }
                 }
-            }).or(async {
+            })
+            .or(async {
                 Timer::after(Duration::from_secs(6)).await;
-            }).await;
+            })
+            .await;
 
             //gcp_mqtt.disconnect().await.expect("Disconnect failed");
 
@@ -470,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn test_jwt(){
+    fn test_jwt() {
         init();
 
         let path = env::var("CERT").expect("CERT environment variable not set");
@@ -493,7 +513,13 @@ mod tests {
 
         let key = EncodingKey::from_ec_pem(&private_cert).unwrap();
 
-        let token = GcpMqtt::create_token(&key, &String::from("test_project"), &Algorithm::ES256, &Duration::from_secs(1200)).unwrap();
+        let token = GcpMqtt::create_token(
+            &key,
+            &String::from("test_project"),
+            &Algorithm::ES256,
+            &Duration::from_secs(1200),
+        )
+        .unwrap();
 
         let jwt = from_utf8(&token).unwrap();
 
@@ -504,6 +530,5 @@ mod tests {
         info!("Decoded token: {:?}", decode_jwt);
 
         //info!("Decoded token: {:?}", decode_jwt);
-
     }
 }

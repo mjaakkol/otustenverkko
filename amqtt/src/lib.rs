@@ -9,7 +9,6 @@
 //#![warn(missing_docs, rust_2021_idioms)]
 #![warn(missing_docs)]
 
-
 mod packets;
 mod validation;
 

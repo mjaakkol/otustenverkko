@@ -1,51 +1,29 @@
 /// Trait for Sensirion sensor
-
 use std::{
-    path::{
-        Path,
-        PathBuf
-    },
-    fmt,
-    fs,
-    convert::{
-        From,
-        TryFrom
-    },
-    io::{
-        Error,
-    },
-    time::{
-        Duration,
-        SystemTime
-    },
+    convert::{From, TryFrom},
+    fmt, fs,
+    io::Error,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     thread,
-    sync::{
-        Arc,
-        Mutex
-    }
+    time::{Duration, SystemTime},
 };
 
+use log::{debug, error, info, warn};
 use thiserror::Error;
-use log::{info, error, warn, debug};
 
 use linux_embedded_hal as hal;
 
 use hal::{Delay, I2cdev};
 //use i2cdev::linux::LinuxI2CError;
 
-use shtcx::{
-    PowerMode,
-    shtc3,
-};
+use shtcx::{shtc3, PowerMode};
 
 use sgp40::Sgp40;
 
-use svm40::{
-    Svm40,
-    Signals
-};
+use svm40::{Signals, Svm40};
 
-const BASELINE_UPDATE_INTERVAL: u64 = 2*60*60;
+const BASELINE_UPDATE_INTERVAL: u64 = 2 * 60 * 60;
 const BASELINE_FILENAME: &'static str = "baseline.txt";
 
 /// Sensor type for the measurements. The two different types are
@@ -54,7 +32,7 @@ const BASELINE_FILENAME: &'static str = "baseline.txt";
 /// calibrated to be equal.
 pub enum SensorType {
     Sgp40,
-    Svm40
+    Svm40,
 }
 
 #[derive(Error, Debug)]
@@ -70,12 +48,11 @@ pub enum IlmaotusError {
 
     //#[error("Unsupported feature set")]
     //UnsupportedFeatureset,
-
     #[error("No sensor found")]
     NoSensorFound,
 
     #[error("File operation failed")]
-    FileError(#[from] Error)
+    FileError(#[from] Error),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -87,7 +64,7 @@ pub struct Measurement {
     pub relative_humidity: u16,
 
     /// Temperature in 100x
-    pub temperature: i32
+    pub temperature: i32,
 }
 
 impl From<Signals> for Measurement {
@@ -95,17 +72,20 @@ impl From<Signals> for Measurement {
         Measurement {
             voc: signals.voc_index as u16 / 10,
             relative_humidity: signals.relative_humidity as u16,
-            temperature: (signals.temperature / 2) as i32
+            temperature: (signals.temperature / 2) as i32,
         }
     }
 }
 
 impl fmt::Display for Measurement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "VOC index: {} RH%: {:.2} Temperature: {:.2}",
+        write!(
+            f,
+            "VOC index: {} RH%: {:.2} Temperature: {:.2}",
             self.voc / 2,
             (self.relative_humidity as f32) / 100.0,
-            (self.temperature as f32) / 100.0)
+            (self.temperature as f32) / 100.0
+        )
     }
 }
 
@@ -114,26 +94,25 @@ pub trait Sensor {
     fn initialize(&mut self) -> Result<(), IlmaotusError>;
 
     /// Pull sample from sensor
-    fn sample(&mut self) ->  Result<Measurement, IlmaotusError>;
+    fn sample(&mut self) -> Result<Measurement, IlmaotusError>;
 
     /// Sensor type
     fn sensor_type(&self) -> SensorType;
 }
 
-
-
 fn gas_err_mapper<T>(message: T) -> IlmaotusError
-where T: fmt::Debug
+where
+    T: fmt::Debug,
 {
     IlmaotusError::GasSensorError(format!("{:?}", message))
 }
 
 fn tmp_err_mapper<T>(message: T) -> IlmaotusError
-where T: fmt::Debug
+where
+    T: fmt::Debug,
 {
     IlmaotusError::TemperatureSensorError(format!("{:?}", message))
 }
-
 
 /// Sgpc3 gas sensor with SHT3 humidity and temperature sensor
 struct Sgp40Sensor {
@@ -141,22 +120,17 @@ struct Sgp40Sensor {
     measurement: Arc<Mutex<Measurement>>,
 }
 
-impl Sgp40Sensor
-{
+impl Sgp40Sensor {
     fn new<P: AsRef<Path> + ?Sized>(path: &P) -> Result<Self, IlmaotusError> {
         let mut path_buf = PathBuf::new();
         path_buf.push(path);
         Ok(Sgp40Sensor {
             path: path_buf,
-            measurement: Arc::new(
-                Mutex::new(
-                    Measurement {
-                        voc: 0,
-                        relative_humidity: 0,
-                        temperature: 0
-                    }
-                )
-            )
+            measurement: Arc::new(Mutex::new(Measurement {
+                voc: 0,
+                relative_humidity: 0,
+                temperature: 0,
+            })),
         })
     }
 }
@@ -177,27 +151,35 @@ impl Sensor for Sgp40Sensor {
             let mut gas_sensor = Sgp40::new(dev_voc, 0x59, Delay);
             let mut prior_time = SystemTime::now();
             loop {
-                let combined = rht_sensor.measure(PowerMode::NormalMode, &mut Delay).map_err(tmp_err_mapper).unwrap();
-                let (temperature, relative_humidity) =
-                    (combined.temperature.as_millidegrees_celsius(), combined.humidity.as_millipercent());
+                let combined = rht_sensor
+                    .measure(PowerMode::NormalMode, &mut Delay)
+                    .map_err(tmp_err_mapper)
+                    .unwrap();
+                let (temperature, relative_humidity) = (
+                    combined.temperature.as_millidegrees_celsius(),
+                    combined.humidity.as_millipercent(),
+                );
 
                 debug!("Combined: {} °C / {} %RH", temperature, relative_humidity);
 
                 let relative_humidity = u16::try_from(relative_humidity).unwrap(); // This is safe as the value is always between 0-100
 
-                let voc = gas_sensor.measure_voc_index_with_rht(
-                    relative_humidity,
-                    i16::try_from(temperature).unwrap_or(i16::MAX)
-                ).map_err(gas_err_mapper).unwrap();
+                let voc = gas_sensor
+                    .measure_voc_index_with_rht(
+                        relative_humidity,
+                        i16::try_from(temperature).unwrap_or(i16::MAX),
+                    )
+                    .map_err(gas_err_mapper)
+                    .unwrap();
 
                 let mut measurement_lock = measurement.lock().unwrap();
 
                 *measurement_lock = Measurement {
                     voc,
-                    relative_humidity:relative_humidity / 10,
-                    temperature : (temperature / 10)
+                    relative_humidity: relative_humidity / 10,
+                    temperature: (temperature / 10),
                 };
-                 // This is safe as time is taken earlier
+                // This is safe as time is taken earlier
                 let processing_overhead = SystemTime::now().duration_since(prior_time).unwrap();
 
                 // Want to aim as close to one sec sleep as possible. The time varies per VOC algorithm
@@ -223,7 +205,7 @@ impl Sensor for Sgp40Sensor {
 }
 
 pub struct Svm40Sensor {
-    sensor: Svm40<I2cdev,Delay>,
+    sensor: Svm40<I2cdev, Delay>,
     baseline_refresh: SystemTime,
 }
 
@@ -236,7 +218,7 @@ impl Svm40Sensor {
         sensor.version().map_err(gas_err_mapper)?;
         Ok(Svm40Sensor {
             sensor,
-            baseline_refresh: SystemTime::UNIX_EPOCH
+            baseline_refresh: SystemTime::UNIX_EPOCH,
         })
     }
 }
@@ -250,9 +232,10 @@ impl Sensor for Svm40Sensor {
             let baseline = u64::from_str_radix(&baseline, 16).expect("Baseline conversion failed");
 
             info!("Found baseline {}", baseline);
-            self.sensor.set_voc_states(baseline).map_err(gas_err_mapper)?;
-        }
-        else {
+            self.sensor
+                .set_voc_states(baseline)
+                .map_err(gas_err_mapper)?;
+        } else {
             warn!("No baseline found");
         }
 
@@ -261,7 +244,7 @@ impl Sensor for Svm40Sensor {
         // Starting the sensor microcontroller
         self.sensor.start_measurement().map_err(gas_err_mapper)?;
 
-            // Weird hack needed to overcome ? in async block
+        // Weird hack needed to overcome ? in async block
         Ok(())
     }
 
@@ -294,12 +277,10 @@ pub fn new<P: AsRef<Path> + ?Sized>(path: &P) -> Result<Box<dyn Sensor>, Ilmaotu
     if let Ok(svm40) = Svm40Sensor::new(path) {
         info!("Found SVM40");
         Ok(Box::new(svm40))
-    }
-    else if let Ok(sgp40) = Sgp40Sensor::new(path) {
+    } else if let Ok(sgp40) = Sgp40Sensor::new(path) {
         info!("Found SGC40");
         Ok(Box::new(sgp40))
-    }
-    else {
+    } else {
         error!("No functioning sensor found");
         Err(IlmaotusError::NoSensorFound)
     }
