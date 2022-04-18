@@ -34,7 +34,7 @@ use messages::{
 mod messages;
 mod sensor;
 
-const CONNECTION_RENEWAL_PERIOD: u32 = 1200;
+const CONNECTION_RENEWAL_PERIOD: u32 = 43200;
 const KEEP_ALIVE_PERIOD: u16 = 30 * 60;
 
 async fn start_cloud() -> GcpMqtt {
@@ -144,7 +144,7 @@ fn main() {
         .unwrap_or(10);
     let sample_interval = env::var("SAMPLE_INTERVAL")
         .and_then(|x| Ok(x.parse::<usize>().unwrap()))
-        .unwrap_or(3);
+        .unwrap_or(30);
 
     info!(
         "Starting IoT node with {} samples per packet and {} sample interval",
