@@ -55,16 +55,16 @@ def process_message(attributes, data, context):
     refined_entries = [
         (
             device_id,
-            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(entry.time)),
             entry.temperature_k,
             entry.humidity_rh,
+            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(entry.time)),
             entry.voc_index
         )
         for entry in msg.blocks
     ]
 
     #print(refined_entries)
-    client = bigquery.Client()
+    client = bigquery.Client(project=PROJECT_ID)
 
     # Take existing results first
     QUERY = f"""
@@ -91,7 +91,7 @@ def process_message(attributes, data, context):
     pb_df = pd.DataFrame.from_records(
         refined_entries,
         exclude=['device_id'],
-        columns=['device_id','time','tK','RH','vocIdx']
+        columns=['device_id','tK','RH','time','vocIdx']
     )
 
     # Merge dataframes coming from Big Query and protobufs into linear dataframe

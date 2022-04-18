@@ -1,0 +1,2 @@
+#!/bin/bash
+gcloud functions deploy pilviotus --entry-point cloud_function_pubsub_handler --runtime python39 --trigger-topic telemetry --set-env-vars=[CLOUD_PROJECT=otustenverkko,DATASET_ID=ilmaotus,TABLENAME_TELEMETRY=environment]

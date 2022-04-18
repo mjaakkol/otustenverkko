@@ -120,13 +120,18 @@ def main():
             request={
                 "parent": parent,
                 },
-                timeout=10
+                timeout=60
                 ).upload_url
 
+        files = [
+            Path('..', 'pilviotus', 'main.py').resolve(strict=True),
+            Path('..', 'pilviotus', 'messages_pb2.py').resolve(strict=True),
+            Path('..', 'pilviotus', 'requirements.txt').resolve(strict=True)
+        ]
+
         with ZipFile('functions.zip', mode='w') as zip:
-            zip.write(Path('..', 'pilviotus', 'main.py'))
-            zip.write(Path('..', 'pilviotus', 'messages_pb2.py'))
-            zip.write(Path('..', 'pilviotus', 'requirements.txt'))
+            for file in files:
+                zip.write(file, arcname=file.name)
 
         r = requests.put(
             upload_url,
@@ -141,12 +146,17 @@ def main():
 
         cfunction = {
             "name": function_name,
-            "description": "Function for featching and storing telemetry data",
+            "description": "Function for fetching and storing telemetry data",
             "source_upload_url": upload_url,
             "runtime": "python39",
             "entry_point": "process_message",
+            "environment_variables": {
+                "CLOUD_PROJECT": PROJECT_ID,
+                "DATASET_ID": DATASET_ID,
+                "TABLENAME_TELEMETRY": TABLENAME_TELEMETRY
+            },
             "event_trigger" : {
-                "event_type": "providers/cloud.pubsub/eventTypes/topic.publish",
+                "event_type": "google.pubsub.topic.publish",
                 "resource": "projects/otustenverkko/topics/telemetry",
             }
         }
