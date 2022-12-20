@@ -1,0 +1,25 @@
+---
+# This is playbook for provisioning the new ilmaotus into Google IoT Manager and Firebase
+
+- name: Provision ilmaotus
+  hosts: otustenverkko
+
+  tasks:
+    - name: Print all available facts
+      ansible.builtin.debug:
+        var: ansible_facts
+
+    - name: Test
+      ansible.builtin.debug:
+        msg: "{{ ansible_facts[ansible_facts['interfaces']
+        | select('match', 'en')
+        | first]['macaddress']
+        | ansible.netcommon.hwaddr('bare') }}"
+
+    #- name: copy client certificate
+    #  ansible.builtin.copy:
+    #    src: "{{ certs }}/{{ ansible_facts[interface]['macaddress'] | ansible.netcommon.hwaddr('bare') }}_X509.pem"
+    #    dest: /etc/ilmaotus/
+    #    owner: root
+    #    mode: '0544'
+    #  become: yes
